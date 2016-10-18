@@ -10,17 +10,13 @@
 #include "net/socket/ssl_server_socket.h"
 #include "net/spdy/spdy_session.h"
 #include "net/test/net_test_suite.h"
-#include "url/url_features.h"
+//#include "url/url_features.h"
 
 #if defined(OS_ANDROID)
 #include "base/android/jni_android.h"
 #include "base/android/jni_registrar.h"
 #include "net/android/dummy_spnego_authenticator.h"
 #include "net/android/net_jni_registrar.h"
-#endif
-
-#if !defined(OS_ANDROID) && !defined(OS_IOS)
-#include "mojo/edk/embedder/embedder.h"  // nogncheck
 #endif
 
 using net::internal::ClientSocketPoolBaseHelper;
@@ -51,10 +47,6 @@ int main(int argc, char** argv) {
   // Enable support for SSL server sockets, which must be done while
   // single-threaded.
   net::EnableSSLServerSockets();
-
-#if !defined(OS_ANDROID) && !defined(OS_IOS)
-  mojo::edk::Init();
-#endif
 
   return base::LaunchUnitTests(
       argc, argv, base::Bind(&NetTestSuite::Run,

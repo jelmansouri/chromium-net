@@ -48,6 +48,7 @@
 #include "net/base/chunked_upload_data_stream.h"
 #include "net/base/directory_listing.h"
 #include "net/base/elements_upload_data_stream.h"
+#include "net/base/filename_util.h"
 #include "net/base/load_flags.h"
 #include "net/base/load_timing_info.h"
 #include "net/base/load_timing_info_test_util.h"
@@ -114,7 +115,6 @@
 #include "testing/platform_test.h"
 
 #if !defined(DISABLE_FILE_SUPPORT)
-#include "net/base/filename_util.h"
 #include "net/url_request/file_protocol_handler.h"
 #include "net/url_request/url_request_file_dir_job.h"
 #endif
