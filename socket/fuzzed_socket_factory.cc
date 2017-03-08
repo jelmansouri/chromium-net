@@ -11,14 +11,16 @@
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
 #include "net/base/network_change_notifier.h"
-#include "net/log/net_log.h"
+#include "net/log/net_log_with_source.h"
 #include "net/socket/client_socket_handle.h"
 #include "net/socket/connection_attempts.h"
+#include "net/socket/fuzzed_datagram_client_socket.h"
 #include "net/socket/fuzzed_socket.h"
 #include "net/socket/ssl_client_socket.h"
-#include "net/udp/fuzzed_datagram_client_socket.h"
 
 namespace net {
+
+class NetLog;
 
 namespace {
 
@@ -62,7 +64,7 @@ class FailingSSLClientSocket : public SSLClientSocket {
     return ERR_SOCKET_NOT_CONNECTED;
   }
 
-  const BoundNetLog& NetLog() const override { return net_log_; }
+  const NetLogWithSource& NetLog() const override { return net_log_; }
 
   void SetSubresourceSpeculation() override {}
   void SetOmniboxSpeculation() override {}
@@ -71,7 +73,7 @@ class FailingSSLClientSocket : public SSLClientSocket {
 
   void EnableTCPFastOpenIfSupported() override {}
 
-  bool WasNpnNegotiated() const override { return false; }
+  bool WasAlpnNegotiated() const override { return false; }
 
   NextProto GetNegotiatedProtocol() const override { return kProtoUnknown; }
 
@@ -105,8 +107,9 @@ class FailingSSLClientSocket : public SSLClientSocket {
     return nullptr;
   }
 
-  Error GetSignedEKMForTokenBinding(crypto::ECPrivateKey* key,
-                                    std::vector<uint8_t>* out) override {
+  Error GetTokenBindingSignature(crypto::ECPrivateKey* key,
+                                 TokenBindingType tb_type,
+                                 std::vector<uint8_t>* out) override {
     NOTREACHED();
     return ERR_UNEXPECTED;
   }
@@ -117,7 +120,7 @@ class FailingSSLClientSocket : public SSLClientSocket {
   }
 
  private:
-  BoundNetLog net_log_;
+  NetLogWithSource net_log_;
 
   DISALLOW_COPY_AND_ASSIGN(FailingSSLClientSocket);
 };
@@ -126,7 +129,7 @@ class FailingSSLClientSocket : public SSLClientSocket {
 
 FuzzedSocketFactory::FuzzedSocketFactory(
     base::FuzzedDataProvider* data_provider)
-    : data_provider_(data_provider) {}
+    : data_provider_(data_provider), fuzz_connect_result_(true) {}
 
 FuzzedSocketFactory::~FuzzedSocketFactory() {}
 
@@ -135,7 +138,7 @@ FuzzedSocketFactory::CreateDatagramClientSocket(
     DatagramSocket::BindType bind_type,
     const RandIntCallback& rand_int_cb,
     NetLog* net_log,
-    const NetLog::Source& source) {
+    const NetLogSource& source) {
   return base::MakeUnique<FuzzedDatagramClientSocket>(data_provider_);
 }
 
@@ -143,10 +146,10 @@ std::unique_ptr<StreamSocket> FuzzedSocketFactory::CreateTransportClientSocket(
     const AddressList& addresses,
     std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
     NetLog* net_log,
-    const NetLog::Source& source) {
+    const NetLogSource& source) {
   std::unique_ptr<FuzzedSocket> socket(
       new FuzzedSocket(data_provider_, net_log));
-  socket->set_fuzz_connect_result(true);
+  socket->set_fuzz_connect_result(fuzz_connect_result_);
   // Just use the first address.
   socket->set_remote_address(*addresses.begin());
   return std::move(socket);

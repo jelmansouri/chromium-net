@@ -8,10 +8,12 @@
 #include <limits>
 
 #include "base/logging.h"
+#include "base/memory/ptr_util.h"
 #include "net/spdy/hpack/hpack_constants.h"
 #include "net/spdy/hpack/hpack_header_table.h"
 #include "net/spdy/hpack/hpack_huffman_table.h"
 #include "net/spdy/hpack/hpack_output_stream.h"
+#include "net/spdy/platform/api/spdy_estimate_memory_usage.h"
 
 namespace net {
 
@@ -81,7 +83,7 @@ HpackEncoder::HpackEncoder(const HpackHuffmanTable& table)
       min_table_size_setting_received_(std::numeric_limits<size_t>::max()),
       listener_(NoOpListener),
       should_index_(DefaultPolicy),
-      allow_huffman_compression_(true),
+      enable_compression_(true),
       should_emit_table_size_(false) {}
 
 HpackEncoder::~HpackEncoder() {}
@@ -119,21 +121,6 @@ bool HpackEncoder::EncodeHeaderSet(const SpdyHeaderBlock& header_set,
   return true;
 }
 
-bool HpackEncoder::EncodeHeaderSetWithoutCompression(
-    const SpdyHeaderBlock& header_set,
-    string* output) {
-  allow_huffman_compression_ = false;
-  MaybeEmitTableSize();
-  for (const auto& header : header_set) {
-    listener_(header.first, header.second);
-    // Note that cookies are not crumbled in this case.
-    EmitNonIndexedLiteral(header);
-  }
-  allow_huffman_compression_ = true;
-  output_stream_.TakeString(output);
-  return true;
-}
-
 void HpackEncoder::ApplyHeaderTableSizeSetting(size_t size_setting) {
   if (size_setting == header_table_.settings_size_bound()) {
     return;
@@ -146,18 +133,28 @@ void HpackEncoder::ApplyHeaderTableSizeSetting(size_t size_setting) {
   should_emit_table_size_ = true;
 }
 
+size_t HpackEncoder::EstimateMemoryUsage() const {
+  // |huffman_table_| is a singleton. It's accounted for in spdy_session_pool.cc
+  return SpdyEstimateMemoryUsage(header_table_) +
+         SpdyEstimateMemoryUsage(output_stream_);
+}
+
 void HpackEncoder::EncodeRepresentations(RepresentationIterator* iter,
                                          string* output) {
   MaybeEmitTableSize();
   while (iter->HasNext()) {
     const auto header = iter->Next();
     listener_(header.first, header.second);
-    const HpackEntry* entry =
-        header_table_.GetByNameAndValue(header.first, header.second);
-    if (entry != nullptr) {
-      EmitIndex(entry);
-    } else if (should_index_(header.first, header.second)) {
-      EmitIndexedLiteral(header);
+    if (enable_compression_) {
+      const HpackEntry* entry =
+          header_table_.GetByNameAndValue(header.first, header.second);
+      if (entry != nullptr) {
+        EmitIndex(entry);
+      } else if (should_index_(header.first, header.second)) {
+        EmitIndexedLiteral(header);
+      } else {
+        EmitNonIndexedLiteral(header);
+      }
     } else {
       EmitNonIndexedLiteral(header);
     }
@@ -167,17 +164,22 @@ void HpackEncoder::EncodeRepresentations(RepresentationIterator* iter,
 }
 
 void HpackEncoder::EmitIndex(const HpackEntry* entry) {
+  DVLOG(2) << "Emitting index " << header_table_.IndexOf(entry);
   output_stream_.AppendPrefix(kIndexedOpcode);
   output_stream_.AppendUint32(header_table_.IndexOf(entry));
 }
 
 void HpackEncoder::EmitIndexedLiteral(const Representation& representation) {
+  DVLOG(2) << "Emitting indexed literal: (" << representation.first << ", "
+           << representation.second << ")";
   output_stream_.AppendPrefix(kLiteralIncrementalIndexOpcode);
   EmitLiteral(representation);
   header_table_.TryAddEntry(representation.first, representation.second);
 }
 
 void HpackEncoder::EmitNonIndexedLiteral(const Representation& representation) {
+  DVLOG(2) << "Emitting nonindexed literal: (" << representation.first << ", "
+           << representation.second << ")";
   output_stream_.AppendPrefix(kLiteralNoIndexOpcode);
   output_stream_.AppendUint32(0);
   EmitString(representation.first);
@@ -197,13 +199,14 @@ void HpackEncoder::EmitLiteral(const Representation& representation) {
 
 void HpackEncoder::EmitString(StringPiece str) {
   size_t encoded_size =
-      (!allow_huffman_compression_ ? str.size()
-                                   : huffman_table_.EncodedSize(str));
+      enable_compression_ ? huffman_table_.EncodedSize(str) : str.size();
   if (encoded_size < str.size()) {
+    DVLOG(2) << "Emitted Huffman-encoded string of length " << encoded_size;
     output_stream_.AppendPrefix(kStringLiteralHuffmanEncoded);
     output_stream_.AppendUint32(encoded_size);
     huffman_table_.EncodeString(str, &output_stream_);
   } else {
+    DVLOG(2) << "Emitted literal string of length " << str.size();
     output_stream_.AppendPrefix(kStringLiteralIdentityEncoded);
     output_stream_.AppendUint32(str.size());
     output_stream_.AppendBytes(str);
@@ -274,6 +277,97 @@ void HpackEncoder::DecomposeRepresentation(const Representation& header_field,
                            pos, end == StringPiece::npos ? end : end - pos)));
     pos = end + 1;
   }
+}
+
+// static
+void HpackEncoder::GatherRepresentation(const Representation& header_field,
+                                        Representations* out) {
+  out->push_back(std::make_pair(header_field.first, header_field.second));
+}
+
+// Iteratively encodes a SpdyHeaderBlock.
+class HpackEncoder::Encoderator : public ProgressiveEncoder {
+ public:
+  Encoderator(const SpdyHeaderBlock& header_set, HpackEncoder* encoder);
+
+  // Encoderator is neither copyable nor movable.
+  Encoderator(const Encoderator&) = delete;
+  Encoderator& operator=(const Encoderator&) = delete;
+
+  // Returns true iff more remains to encode.
+  bool HasNext() const override { return has_next_; }
+
+  // Encodes up to max_encoded_bytes of the current header block into the
+  // given output string.
+  void Next(size_t max_encoded_bytes, string* output) override;
+
+ private:
+  HpackEncoder* encoder_;
+  std::unique_ptr<RepresentationIterator> header_it_;
+  Representations pseudo_headers_;
+  Representations regular_headers_;
+  bool has_next_;
+};
+
+HpackEncoder::Encoderator::Encoderator(const SpdyHeaderBlock& header_set,
+                                       HpackEncoder* encoder)
+    : encoder_(encoder), has_next_(true) {
+  // Separate header set into pseudo-headers and regular headers.
+  const bool use_compression = encoder_->enable_compression_;
+  bool found_cookie = false;
+  for (const auto& header : header_set) {
+    if (!found_cookie && header.first == "cookie") {
+      // Note that there can only be one "cookie" header, because header_set
+      // is a map.
+      found_cookie = true;
+      CookieToCrumbs(header, &regular_headers_);
+    } else if (!header.first.empty() &&
+               header.first[0] == kPseudoHeaderPrefix) {
+      use_compression ? DecomposeRepresentation(header, &pseudo_headers_)
+                      : GatherRepresentation(header, &pseudo_headers_);
+    } else {
+      use_compression ? DecomposeRepresentation(header, &regular_headers_)
+                      : GatherRepresentation(header, &regular_headers_);
+    }
+  }
+  header_it_ = base::MakeUnique<RepresentationIterator>(pseudo_headers_,
+                                                        regular_headers_);
+
+  encoder_->MaybeEmitTableSize();
+}
+
+void HpackEncoder::Encoderator::Next(size_t max_encoded_bytes, string* output) {
+  SPDY_BUG_IF(!has_next_)
+      << "Encoderator::Next called with nothing left to encode.";
+  const bool use_compression = encoder_->enable_compression_;
+
+  // Encode up to max_encoded_bytes of headers.
+  while (header_it_->HasNext() &&
+         encoder_->output_stream_.size() <= max_encoded_bytes) {
+    const Representation header = header_it_->Next();
+    encoder_->listener_(header.first, header.second);
+    if (use_compression) {
+      const HpackEntry* entry = encoder_->header_table_.GetByNameAndValue(
+          header.first, header.second);
+      if (entry != nullptr) {
+        encoder_->EmitIndex(entry);
+      } else if (encoder_->should_index_(header.first, header.second)) {
+        encoder_->EmitIndexedLiteral(header);
+      } else {
+        encoder_->EmitNonIndexedLiteral(header);
+      }
+    } else {
+      encoder_->EmitNonIndexedLiteral(header);
+    }
+  }
+
+  has_next_ = encoder_->output_stream_.size() > max_encoded_bytes;
+  encoder_->output_stream_.BoundedTakeString(max_encoded_bytes, output);
+}
+
+std::unique_ptr<HpackEncoder::ProgressiveEncoder> HpackEncoder::EncodeHeaderSet(
+    const SpdyHeaderBlock& header_set) {
+  return base::MakeUnique<Encoderator>(header_set, this);
 }
 
 }  // namespace net

@@ -11,6 +11,7 @@
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/sys_info.h"
+#include "base/trace_event/memory_usage_estimator.h"
 #include "net/base/net_errors.h"
 #include "net/disk_cache/cache_util.h"
 #include "net/disk_cache/memory/mem_entry_impl.h"
@@ -181,7 +182,6 @@ int MemBackendImpl::DoomEntriesBetween(Time initial_time,
                                        const CompletionCallback& callback) {
   if (end_time.is_null())
     end_time = Time::Max();
-
   DCHECK_GE(end_time, initial_time);
 
   base::LinkNode<MemEntryImpl>* node = lru_list_.head();
@@ -204,6 +204,26 @@ int MemBackendImpl::DoomEntriesSince(Time initial_time,
 int MemBackendImpl::CalculateSizeOfAllEntries(
     const CompletionCallback& callback) {
   return current_size_;
+}
+
+int MemBackendImpl::CalculateSizeOfEntriesBetween(
+    base::Time initial_time,
+    base::Time end_time,
+    const CompletionCallback& callback) {
+  if (end_time.is_null())
+    end_time = Time::Max();
+  DCHECK_GE(end_time, initial_time);
+
+  int size = 0;
+  base::LinkNode<MemEntryImpl>* node = lru_list_.head();
+  while (node != lru_list_.end() && node->value()->GetLastUsed() < initial_time)
+    node = node->next();
+  while (node != lru_list_.end() && node->value()->GetLastUsed() < end_time) {
+    MemEntryImpl* entry = node->value();
+    size += entry->GetStorageSize();
+    node = node->next();
+  }
+  return size;
 }
 
 class MemBackendImpl::MemIterator final : public Backend::Iterator {
@@ -262,6 +282,13 @@ void MemBackendImpl::OnExternalCacheHit(const std::string& key) {
   EntryMap::iterator it = entries_.find(key);
   if (it != entries_.end())
     it->second->UpdateStateOnUse(MemEntryImpl::ENTRY_WAS_NOT_MODIFIED);
+}
+
+size_t MemBackendImpl::EstimateMemoryUsage() const {
+  // Entries in lru_list_ will be counted by EMU but not in entries_ since
+  // they're pointers.
+  return base::trace_event::EstimateMemoryUsage(lru_list_) +
+         base::trace_event::EstimateMemoryUsage(entries_);
 }
 
 void MemBackendImpl::EvictIfNeeded() {

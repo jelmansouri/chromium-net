@@ -34,6 +34,7 @@
 #include "net/dns/mock_host_resolver.h"
 #include "net/log/net_log_event_type.h"
 #include "net/log/net_log_source_type.h"
+#include "net/log/net_log_with_source.h"
 #include "net/log/test_net_log.h"
 #include "net/test/gtest_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -235,7 +236,7 @@ class Request {
     result_ = resolver_->Resolve(
         info_, priority_, &list_,
         base::Bind(&Request::OnComplete, base::Unretained(this)), &request_,
-        BoundNetLog());
+        NetLogWithSource());
     if (!list_.empty())
       EXPECT_THAT(result_, IsOk());
     return result_;
@@ -244,14 +245,14 @@ class Request {
   int ResolveFromCache() {
     DCHECK(resolver_);
     DCHECK(!request_);
-    return resolver_->ResolveFromCache(info_, &list_, BoundNetLog());
+    return resolver_->ResolveFromCache(info_, &list_, NetLogWithSource());
   }
 
   int ResolveStaleFromCache() {
     DCHECK(resolver_);
     DCHECK(!request_);
     return resolver_->ResolveStaleFromCache(info_, &list_, &staleness_,
-                                            BoundNetLog());
+                                            NetLogWithSource());
   }
 
   void ChangePriority(RequestPriority priority) {
@@ -461,7 +462,7 @@ class TestHostResolverImpl : public HostResolverImpl {
  private:
   const bool ipv6_reachable_;
 
-  bool IsIPv6Reachable(const BoundNetLog& net_log) override {
+  bool IsIPv6Reachable(const NetLogWithSource& net_log) override {
     return ipv6_reachable_;
   }
 };
@@ -612,7 +613,7 @@ class HostResolverImplTest : public testing::Test {
     return HostResolverImpl::kMaximumDnsFailures;
   }
 
-  bool IsIPv6Reachable(const BoundNetLog& net_log) {
+  bool IsIPv6Reachable(const NetLogWithSource& net_log) {
     return resolver_->IsIPv6Reachable(net_log);
   }
 
@@ -1485,9 +1486,9 @@ TEST_F(HostResolverImplTest, MultipleAttempts) {
 
 // If a host resolves to a list that includes 127.0.53.53, this is treated as
 // an error. 127.0.53.53 is a localhost address, however it has been given a
-// special significance by ICANN to help surfance name collision resulting from
+// special significance by ICANN to help surface name collision resulting from
 // the new gTLDs.
-TEST_F(HostResolverImplTest, NameCollision127_0_53_53) {
+TEST_F(HostResolverImplTest, NameCollisionIcann) {
   proc_->AddRuleForAllFamilies("single", "127.0.53.53");
   proc_->AddRuleForAllFamilies("multiple", "127.0.0.1,127.0.53.53");
   proc_->AddRuleForAllFamilies("ipv6", "::127.0.53.53");
@@ -1501,6 +1502,12 @@ TEST_F(HostResolverImplTest, NameCollision127_0_53_53) {
   request = CreateRequest("single");
   EXPECT_THAT(request->Resolve(), IsError(ERR_IO_PENDING));
   EXPECT_THAT(request->WaitForResult(), IsError(ERR_ICANN_NAME_COLLISION));
+
+  // ERR_ICANN_NAME_COLLISION is cached like any other error, using a
+  // fixed TTL for failed entries from proc-based resolver. That said, the
+  // fixed TTL is 0, so it will never be cached.
+  request = CreateRequest("single");
+  EXPECT_THAT(request->ResolveFromCache(), IsError(ERR_DNS_CACHE_MISS));
 
   request = CreateRequest("multiple");
   EXPECT_THAT(request->Resolve(), IsError(ERR_IO_PENDING));
@@ -1536,16 +1543,16 @@ TEST_F(HostResolverImplTest, IsIPv6Reachable) {
   resolver_.reset(new HostResolverImpl(DefaultOptions(), nullptr));
 
   // Verify that two consecutive calls return the same value.
-  TestNetLog net_log;
-  BoundNetLog bound_net_log =
-      BoundNetLog::Make(&net_log, NetLogSourceType::NONE);
-  bool result1 = IsIPv6Reachable(bound_net_log);
-  bool result2 = IsIPv6Reachable(bound_net_log);
+  TestNetLog test_net_log;
+  NetLogWithSource net_log =
+      NetLogWithSource::Make(&test_net_log, NetLogSourceType::NONE);
+  bool result1 = IsIPv6Reachable(net_log);
+  bool result2 = IsIPv6Reachable(net_log);
   EXPECT_EQ(result1, result2);
 
   // Filter reachability check events and verify that there are two of them.
   TestNetLogEntry::List event_list;
-  net_log.GetEntries(&event_list);
+  test_net_log.GetEntries(&event_list);
   TestNetLogEntry::List probe_event_list;
   for (const auto& event : event_list) {
     if (event.type ==
@@ -1614,6 +1621,16 @@ class HostResolverImplDnsTest : public HostResolverImplTest {
                MockDnsClientRule::OK, true);
     AddDnsRule("4slow_6timeout", dns_protocol::kTypeAAAA,
                MockDnsClientRule::TIMEOUT, false);
+    AddDnsRule("4collision", dns_protocol::kTypeA, IPAddress(127, 0, 53, 53),
+               false);
+    AddDnsRule("4collision", dns_protocol::kTypeAAAA, MockDnsClientRule::EMPTY,
+               false);
+    AddDnsRule("6collision", dns_protocol::kTypeA, MockDnsClientRule::EMPTY,
+               false);
+    // This isn't the expected IP for collisions (but looks close to it).
+    AddDnsRule("6collision", dns_protocol::kTypeAAAA,
+               IPAddress(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 127, 0, 53, 53),
+               false);
     CreateResolver();
   }
 
@@ -1630,6 +1647,22 @@ class HostResolverImplDnsTest : public HostResolverImplTest {
   }
 
   // Adds a rule to |dns_rules_|. Must be followed by |CreateResolver| to apply.
+  void AddDnsRule(const std::string& prefix,
+                  uint16_t qtype,
+                  MockDnsClientRule::ResultType result_type,
+                  bool delay) {
+    return AddDnsRule(prefix, qtype, MockDnsClientRule::Result(result_type),
+                      delay);
+  }
+
+  void AddDnsRule(const std::string& prefix,
+                  uint16_t qtype,
+                  const IPAddress& result_ip,
+                  bool delay) {
+    return AddDnsRule(prefix, qtype, MockDnsClientRule::Result(result_ip),
+                      delay);
+  }
+
   void AddDnsRule(const std::string& prefix,
                   uint16_t qtype,
                   MockDnsClientRule::Result result,
@@ -1789,6 +1822,34 @@ TEST_F(HostResolverImplDnsTest, DnsTaskUnspec) {
   EXPECT_TRUE(requests_[2]->HasAddress("::1", 80));
   EXPECT_EQ(1u, requests_[3]->NumberOfAddresses());
   EXPECT_TRUE(requests_[3]->HasAddress("192.168.1.101", 80));
+}
+
+TEST_F(HostResolverImplDnsTest, NameCollisionIcann) {
+  ChangeDnsConfig(CreateValidDnsConfig());
+
+  // When the resolver returns an A record with 127.0.53.53 it should be mapped
+  // to a special error.
+  EXPECT_THAT(CreateRequest("4collision", 80)->Resolve(),
+              IsError(ERR_IO_PENDING));
+
+  EXPECT_THAT(requests_[0]->WaitForResult(), IsError(ERR_ICANN_NAME_COLLISION));
+
+  // When the resolver returns an AAAA record with ::127.0.53.53 it should
+  // work just like any other IP. (Despite having the same suffix, it is not
+  // considered special)
+  EXPECT_THAT(CreateRequest("6collision", 80)->Resolve(),
+              IsError(ERR_IO_PENDING));
+
+  EXPECT_THAT(requests_[1]->WaitForResult(), IsError(OK));
+  EXPECT_TRUE(requests_[1]->HasAddress("::127.0.53.53", 80));
+
+  // The mock responses for 4collision (and 6collision) have a TTL of 1 day.
+  // Test whether the ERR_ICANN_NAME_COLLISION failure was cached.
+  // On the one hand caching the failure makes sense, as the error is derived
+  // from the IP in the response. However for consistency with the the proc-
+  // based implementation the TTL is unused.
+  EXPECT_THAT(CreateRequest("4collision", 80)->ResolveFromCache(),
+              IsError(ERR_DNS_CACHE_MISS));
 }
 
 TEST_F(HostResolverImplDnsTest, ServeFromHosts) {
@@ -2459,6 +2520,100 @@ TEST_F(HostResolverImplTest, CacheHitCallback) {
   EXPECT_THAT(req->Resolve(), IsOk());
   EXPECT_EQ(2, count1);
   EXPECT_EQ(1, count2);
+}
+
+// Tests that after changing the default AddressFamily to IPV4, requests
+// with UNSPECIFIED address family map to IPV4.
+TEST_F(HostResolverImplTest, SetDefaultAddressFamily_IPv4) {
+  CreateSerialResolver();  // To guarantee order of resolutions.
+
+  proc_->AddRule("h1", ADDRESS_FAMILY_IPV4, "1.0.0.1");
+  proc_->AddRule("h1", ADDRESS_FAMILY_IPV6, "::2");
+
+  resolver_->SetDefaultAddressFamily(ADDRESS_FAMILY_IPV4);
+
+  CreateRequest("h1", 80, MEDIUM, ADDRESS_FAMILY_UNSPECIFIED);
+  CreateRequest("h1", 80, MEDIUM, ADDRESS_FAMILY_IPV4);
+  CreateRequest("h1", 80, MEDIUM, ADDRESS_FAMILY_IPV6);
+
+  // Start all of the requests.
+  for (size_t i = 0; i < requests_.size(); ++i) {
+    EXPECT_EQ(ERR_IO_PENDING, requests_[i]->Resolve()) << i;
+  }
+
+  proc_->SignalMultiple(requests_.size());
+
+  // Wait for all the requests to complete.
+  for (size_t i = 0u; i < requests_.size(); ++i) {
+    EXPECT_EQ(OK, requests_[i]->WaitForResult()) << i;
+  }
+
+  // Since the requests all had the same priority and we limited the thread
+  // count to 1, they should have completed in the same order as they were
+  // requested. Moreover, request0 and request1 will have been serviced by
+  // the same job.
+
+  MockHostResolverProc::CaptureList capture_list = proc_->GetCaptureList();
+  ASSERT_EQ(2u, capture_list.size());
+
+  EXPECT_EQ("h1", capture_list[0].hostname);
+  EXPECT_EQ(ADDRESS_FAMILY_IPV4, capture_list[0].address_family);
+
+  EXPECT_EQ("h1", capture_list[1].hostname);
+  EXPECT_EQ(ADDRESS_FAMILY_IPV6, capture_list[1].address_family);
+
+  // Now check that the correct resolved IP addresses were returned.
+  EXPECT_TRUE(requests_[0]->HasOneAddress("1.0.0.1", 80));
+  EXPECT_TRUE(requests_[1]->HasOneAddress("1.0.0.1", 80));
+  EXPECT_TRUE(requests_[2]->HasOneAddress("::2", 80));
+}
+
+// This is the exact same test as SetDefaultAddressFamily_IPv4, except the
+// default family is set to IPv6 and the family of requests is flipped where
+// specified.
+TEST_F(HostResolverImplTest, SetDefaultAddressFamily_IPv6) {
+  CreateSerialResolver();  // To guarantee order of resolutions.
+
+  // Don't use IPv6 replacements here since some systems don't support it.
+  proc_->AddRule("h1", ADDRESS_FAMILY_IPV4, "1.0.0.1");
+  proc_->AddRule("h1", ADDRESS_FAMILY_IPV6, "::2");
+
+  resolver_->SetDefaultAddressFamily(ADDRESS_FAMILY_IPV6);
+
+  CreateRequest("h1", 80, MEDIUM, ADDRESS_FAMILY_UNSPECIFIED);
+  CreateRequest("h1", 80, MEDIUM, ADDRESS_FAMILY_IPV6);
+  CreateRequest("h1", 80, MEDIUM, ADDRESS_FAMILY_IPV4);
+
+  // Start all of the requests.
+  for (size_t i = 0; i < requests_.size(); ++i) {
+    EXPECT_EQ(ERR_IO_PENDING, requests_[i]->Resolve()) << i;
+  }
+
+  proc_->SignalMultiple(requests_.size());
+
+  // Wait for all the requests to complete.
+  for (size_t i = 0u; i < requests_.size(); ++i) {
+    EXPECT_EQ(OK, requests_[i]->WaitForResult()) << i;
+  }
+
+  // Since the requests all had the same priority and we limited the thread
+  // count to 1, they should have completed in the same order as they were
+  // requested. Moreover, request0 and request1 will have been serviced by
+  // the same job.
+
+  MockHostResolverProc::CaptureList capture_list = proc_->GetCaptureList();
+  ASSERT_EQ(2u, capture_list.size());
+
+  EXPECT_EQ("h1", capture_list[0].hostname);
+  EXPECT_EQ(ADDRESS_FAMILY_IPV6, capture_list[0].address_family);
+
+  EXPECT_EQ("h1", capture_list[1].hostname);
+  EXPECT_EQ(ADDRESS_FAMILY_IPV4, capture_list[1].address_family);
+
+  // Now check that the correct resolved IP addresses were returned.
+  EXPECT_TRUE(requests_[0]->HasOneAddress("::2", 80));
+  EXPECT_TRUE(requests_[1]->HasOneAddress("::2", 80));
+  EXPECT_TRUE(requests_[2]->HasOneAddress("1.0.0.1", 80));
 }
 
 }  // namespace net

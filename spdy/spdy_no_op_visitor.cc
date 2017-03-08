@@ -20,13 +20,8 @@ net::SpdyHeadersHandlerInterface* SpdyNoOpVisitor::OnHeaderFrameStart(
   return this;
 }
 
-bool SpdyNoOpVisitor::OnControlFrameHeaderData(SpdyStreamId stream_id,
-                                               const char* header_data,
-                                               size_t header_data_len) {
-  return true;
-}
-
-bool SpdyNoOpVisitor::OnUnknownFrame(SpdyStreamId stream_id, int frame_type) {
+bool SpdyNoOpVisitor::OnUnknownFrame(SpdyStreamId stream_id,
+                                     uint8_t frame_type) {
   return true;
 }
 

@@ -10,10 +10,11 @@
 #include <string>
 #include <utility>
 
+#include "base/logging.h"
 #include "base/memory/ref_counted.h"
 #include "base/strings/string_number_conversions.h"
 #include "net/base/request_priority.h"
-#include "net/log/net_log.h"
+#include "net/log/net_log_with_source.h"
 #include "net/spdy/spdy_buffer_producer.h"
 #include "net/spdy/spdy_stream.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -61,6 +62,11 @@ class RequeingBufferProducer : public SpdyBufferProducer {
     return std::move(buffer_);
   }
 
+  size_t EstimateMemoryUsage() const override {
+    NOTREACHED();
+    return 0;
+  }
+
   static void ConsumeCallback(SpdyWriteQueue* queue,
                               size_t size,
                               SpdyBuffer::ConsumeSource source) {
@@ -95,9 +101,8 @@ int ProducerToInt(std::unique_ptr<SpdyBufferProducer> producer) {
 // -- be careful to not call any functions that expect the session to
 // be there.
 SpdyStream* MakeTestStream(RequestPriority priority) {
-  return new SpdyStream(
-      SPDY_BIDIRECTIONAL_STREAM, base::WeakPtr<SpdySession>(),
-      GURL(), priority, 0, 0, BoundNetLog());
+  return new SpdyStream(SPDY_BIDIRECTIONAL_STREAM, base::WeakPtr<SpdySession>(),
+                        GURL(), priority, 0, 0, NetLogWithSource());
 }
 
 // Add some frame producers of different priority. The producers

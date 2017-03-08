@@ -2,11 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef NET_QUIC_QUIC_STREAM_SEQUENCER_BUFFER_H_
-#define NET_QUIC_QUIC_STREAM_SEQUENCER_BUFFER_H_
+#ifndef NET_QUIC_CORE_QUIC_STREAM_SEQUENCER_BUFFER_H_
+#define NET_QUIC_CORE_QUIC_STREAM_SEQUENCER_BUFFER_H_
 
-// QuicStreamSequencerBuffer implements QuicStreamSequencerBufferInterface.
-// It is a circular stream buffer with random write and
+// QuicStreamSequencerBuffer is a circular stream buffer with random write and
 // in-sequence read. It consists of a vector of pointers pointing
 // to memory blocks created as needed and a list of Gaps to indicate
 // the missing data between the data already written into the buffer.
@@ -60,14 +59,14 @@
 //  size_t consumed = consume_iovs(iovs, iov_count);
 //  buffer.MarkConsumed(consumed);
 
-#include <stddef.h>
-
+#include <cstddef>
 #include <functional>
 #include <list>
 #include <memory>
 
 #include "base/macros.h"
-#include "net/quic/core/quic_protocol.h"
+#include "net/quic/core/quic_packets.h"
+#include "net/quic/platform/api/quic_export.h"
 
 namespace net {
 
@@ -75,18 +74,18 @@ namespace test {
 class QuicStreamSequencerBufferPeer;
 }  // namespace test
 
-class NET_EXPORT_PRIVATE QuicStreamSequencerBuffer {
+class QUIC_EXPORT_PRIVATE QuicStreamSequencerBuffer {
  public:
   // A Gap indicates a missing chunk of bytes between
   // [begin_offset, end_offset) in the stream
-  struct NET_EXPORT_PRIVATE Gap {
+  struct QUIC_EXPORT_PRIVATE Gap {
     Gap(QuicStreamOffset begin_offset, QuicStreamOffset end_offset);
     QuicStreamOffset begin_offset;
     QuicStreamOffset end_offset;
   };
 
   // A FrameInfo stores the length of a frame and the time it arrived.
-  struct NET_EXPORT_PRIVATE FrameInfo {
+  struct QUIC_EXPORT_PRIVATE FrameInfo {
     FrameInfo();
     FrameInfo(size_t length, QuicTime timestamp);
 
@@ -125,7 +124,10 @@ class NET_EXPORT_PRIVATE QuicStreamSequencerBuffer {
 
   // Reads from this buffer into given iovec array, up to number of iov_len
   // iovec objects and returns the number of bytes read.
-  size_t Readv(const struct iovec* dest_iov, size_t dest_count);
+  QuicErrorCode Readv(const struct iovec* dest_iov,
+                      size_t dest_count,
+                      size_t* bytes_read,
+                      std::string* error_details);
 
   // Returns the readable region of valid data in iovec format. The readable
   // region is the buffer region where there is valid data not yet read by
@@ -164,23 +166,21 @@ class NET_EXPORT_PRIVATE QuicStreamSequencerBuffer {
   // Count how many bytes are in buffer at this moment.
   size_t BytesBuffered() const;
 
-  bool reduce_sequencer_buffer_memory_life_time() const {
-    return reduce_sequencer_buffer_memory_life_time_;
-  }
-
  private:
   friend class test::QuicStreamSequencerBufferPeer;
 
   // Dispose the given buffer block.
   // After calling this method, blocks_[index] is set to nullptr
   // in order to indicate that no memory set is allocated for that block.
-  void RetireBlock(size_t index);
+  // Returns true on success, false otherwise.
+  bool RetireBlock(size_t index);
 
   // Should only be called after the indexed block is read till the end of the
   // block or a gap has been reached.
-  // If the block at |block_index| contains no buffered data, then the block is
-  // retired.
-  void RetireBlockIfEmpty(size_t block_index);
+  // If the block at |block_index| contains no buffered data, the block
+  // should be retired.
+  // Return false on success, or false otherwise.
+  bool RetireBlockIfEmpty(size_t block_index);
 
   // Called within OnStreamData() to update the gap OnStreamData() writes into
   // (remove, split or change begin/end offset).
@@ -215,12 +215,10 @@ class NET_EXPORT_PRIVATE QuicStreamSequencerBuffer {
   // should be removed from the map.
   void UpdateFrameArrivalMap(QuicStreamOffset offset);
 
-  // Return |gaps_| as a std::string: [1024, 1500) [1800, 2048)... for
-  // debugging.
+  // Return |gaps_| as a string: [1024, 1500) [1800, 2048)... for debugging.
   std::string GapsDebugString();
 
-  // Return all received frames as a std::string in same format as
-  // GapsDebugString();
+  // Return all received frames as a string in same format as GapsDebugString();
   std::string ReceivedFramesDebugString();
 
   // The maximum total capacity of this buffer in byte, as constructed.
@@ -235,10 +233,6 @@ class NET_EXPORT_PRIVATE QuicStreamSequencerBuffer {
   // Contains Gaps which represents currently missing data.
   std::list<Gap> gaps_;
 
-  // If true, allocate buffer memory upon the first frame arrival and release
-  // the memory when stream is read closed.
-  bool reduce_sequencer_buffer_memory_life_time_;
-
   // An ordered, variable-length list of blocks, with the length limited
   // such that the number of blocks never exceeds blocks_count_.
   // Each list entry can hold up to kBlockSizeBytes bytes.
@@ -250,8 +244,13 @@ class NET_EXPORT_PRIVATE QuicStreamSequencerBuffer {
   // Stores all the buffered frames' start offset, length and arrival time.
   std::map<QuicStreamOffset, FrameInfo> frame_arrival_time_map_;
 
+  // For debugging use after free, assigned to 123456 in constructor and 654321
+  // in destructor. As long as it's not 123456, this means either use after free
+  // or memory corruption.
+  int32_t destruction_indicator_;
+
   DISALLOW_COPY_AND_ASSIGN(QuicStreamSequencerBuffer);
 };
 }  // namespace net
 
-#endif  // NET_QUIC_QUIC_STREAM_SEQUENCER_BUFFER_H_
+#endif  // NET_QUIC_CORE_QUIC_STREAM_SEQUENCER_BUFFER_H_

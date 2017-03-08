@@ -253,6 +253,14 @@ int MemEntryImpl::ReadyForSparseIO(const CompletionCallback& callback) {
   return net::OK;
 }
 
+size_t MemEntryImpl::EstimateMemoryUsage() const {
+  // Subtlety: the entries in children_ are not double counted, as the entry
+  // pointers won't be followed by EstimateMemoryUsage.
+  return base::trace_event::EstimateMemoryUsage(data_) +
+         base::trace_event::EstimateMemoryUsage(key_) +
+         base::trace_event::EstimateMemoryUsage(children_);
+}
+
 // ------------------------------------------------------------------------
 
 MemEntryImpl::MemEntryImpl(MemBackendImpl* backend,
@@ -270,8 +278,8 @@ MemEntryImpl::MemEntryImpl(MemBackendImpl* backend,
       backend_(backend),
       doomed_(false) {
   backend_->OnEntryInserted(this);
-  net_log_ = net::BoundNetLog::Make(net_log,
-                                    net::NetLogSourceType::MEMORY_CACHE_ENTRY);
+  net_log_ = net::NetLogWithSource::Make(
+      net_log, net::NetLogSourceType::MEMORY_CACHE_ENTRY);
   net_log_.BeginEvent(net::NetLogEventType::DISK_CACHE_MEM_ENTRY_IMPL,
                       base::Bind(&NetLogEntryCreationCallback, this));
 }

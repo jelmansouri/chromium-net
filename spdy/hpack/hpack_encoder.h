@@ -60,11 +60,22 @@ class NET_EXPORT_PRIVATE HpackEncoder {
   // whether or not the encoding was successful.
   bool EncodeHeaderSet(const SpdyHeaderBlock& header_set, std::string* output);
 
-  // Encodes the given header set into the given string. Only non-indexed
-  // literal representations are emitted, bypassing the header table. Huffman
-  // coding is also not used. Returns whether the encoding was successful.
-  bool EncodeHeaderSetWithoutCompression(const SpdyHeaderBlock& header_set,
-                                         std::string* output);
+  class NET_EXPORT_PRIVATE ProgressiveEncoder {
+   public:
+    virtual ~ProgressiveEncoder() {}
+
+    // Returns true iff more remains to encode.
+    virtual bool HasNext() const = 0;
+
+    // Encodes up to max_encoded_bytes of the current header block into the
+    // given output string.
+    virtual void Next(size_t max_encoded_bytes, std::string* output) = 0;
+  };
+
+  // Returns a ProgressiveEncoder which must be outlived by both the given
+  // SpdyHeaderBlock and this object.
+  std::unique_ptr<ProgressiveEncoder> EncodeHeaderSet(
+      const SpdyHeaderBlock& header_set);
 
   // Called upon a change to SETTINGS_HEADER_TABLE_SIZE. Specifically, this
   // is to be called after receiving (and sending an acknowledgement for) a
@@ -88,10 +99,16 @@ class NET_EXPORT_PRIVATE HpackEncoder {
     header_table_.set_debug_visitor(std::move(visitor));
   }
 
+  void DisableCompression() { enable_compression_ = false; }
+
+  // Returns the estimate of dynamically allocated memory in bytes.
+  size_t EstimateMemoryUsage() const;
+
  private:
   friend class test::HpackEncoderPeer;
 
   class RepresentationIterator;
+  class Encoderator;
 
   // Encodes a sequence of header name-value pairs as a single header block.
   void EncodeRepresentations(RepresentationIterator* iter, std::string* output);
@@ -119,6 +136,10 @@ class NET_EXPORT_PRIVATE HpackEncoder {
   static void DecomposeRepresentation(const Representation& header_field,
                                       Representations* out);
 
+  // Gathers headers without crumbling. Used when compression is not enabled.
+  static void GatherRepresentation(const Representation& header_field,
+                                   Representations* out);
+
   HpackHeaderTable header_table_;
   HpackOutputStream output_stream_;
 
@@ -126,7 +147,7 @@ class NET_EXPORT_PRIVATE HpackEncoder {
   size_t min_table_size_setting_received_;
   HeaderListener listener_;
   IndexingPolicy should_index_;
-  bool allow_huffman_compression_;
+  bool enable_compression_;
   bool should_emit_table_size_;
 
   DISALLOW_COPY_AND_ASSIGN(HpackEncoder);

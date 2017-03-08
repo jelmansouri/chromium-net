@@ -27,8 +27,10 @@
 #include "net/cert/signed_certificate_timestamp.h"
 #include "net/cert/x509_certificate.h"
 #include "net/cert/x509_certificate_net_log_param.h"
-#include "net/log/net_log.h"
+#include "net/log/net_log_capture_mode.h"
 #include "net/log/net_log_event_type.h"
+#include "net/log/net_log_parameters_callback.h"
+#include "net/log/net_log_with_source.h"
 
 namespace net {
 
@@ -381,7 +383,7 @@ ct::EVPolicyCompliance CertPolicyComplianceToEVPolicyCompliance(
 void CheckCTEVPolicyCompliance(X509Certificate* cert,
                                const ct::EVCertsWhitelist* ev_whitelist,
                                const ct::SCTList& verified_scts,
-                               const BoundNetLog& net_log,
+                               const NetLogWithSource& net_log,
                                EVComplianceDetails* result) {
   result->status = CertPolicyComplianceToEVPolicyCompliance(
       CheckCertPolicyCompliance(*cert, verified_scts));
@@ -399,7 +401,7 @@ void CheckCTEVPolicyCompliance(X509Certificate* cert,
 ct::CertPolicyCompliance CTPolicyEnforcer::DoesConformToCertPolicy(
     X509Certificate* cert,
     const ct::SCTList& verified_scts,
-    const BoundNetLog& net_log) {
+    const NetLogWithSource& net_log) {
   // If the build is not timely, no certificate is considered compliant
   // with CT policy. The reasoning is that, for example, a log might
   // have been pulled and is no longer considered valid; thus, a client
@@ -413,7 +415,7 @@ ct::CertPolicyCompliance CTPolicyEnforcer::DoesConformToCertPolicy(
     compliance = CheckCertPolicyCompliance(*cert, verified_scts);
   }
 
-  NetLog::ParametersCallback net_log_callback =
+  NetLogParametersCallback net_log_callback =
       base::Bind(&NetLogCertComplianceCheckResultCallback,
                  base::Unretained(cert), build_timely, compliance);
 
@@ -427,7 +429,7 @@ ct::EVPolicyCompliance CTPolicyEnforcer::DoesConformToCTEVPolicy(
     X509Certificate* cert,
     const ct::EVCertsWhitelist* ev_whitelist,
     const ct::SCTList& verified_scts,
-    const BoundNetLog& net_log) {
+    const NetLogWithSource& net_log) {
   EVComplianceDetails details;
   // If the build is not timely, no certificate is considered compliant
   // with EV policy. The reasoning is that, for example, a log might
@@ -442,7 +444,7 @@ ct::EVPolicyCompliance CTPolicyEnforcer::DoesConformToCTEVPolicy(
                               &details);
   }
 
-  NetLog::ParametersCallback net_log_callback =
+  NetLogParametersCallback net_log_callback =
       base::Bind(&NetLogEVComplianceCheckResultCallback, base::Unretained(cert),
                  base::Unretained(&details));
 

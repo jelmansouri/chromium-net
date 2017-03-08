@@ -20,6 +20,7 @@
 #include "base/task_runner_util.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "base/time/time.h"
+#include "base/trace_event/memory_usage_estimator.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
 #include "net/disk_cache/net_log_parameters.h"
@@ -29,6 +30,7 @@
 #include "net/disk_cache/simple/simple_net_log_parameters.h"
 #include "net/disk_cache/simple/simple_synchronous_entry.h"
 #include "net/disk_cache/simple/simple_util.h"
+#include "net/log/net_log.h"
 #include "net/log/net_log_source_type.h"
 #include "third_party/zlib/zlib.h"
 
@@ -148,6 +150,13 @@ using base::FilePath;
 using base::Time;
 using base::TaskRunner;
 
+// Static function called by base::trace_event::EstimateMemoryUsage() to
+// estimate the memory of SimpleEntryOperation.
+// This needs to be in disk_cache namespace.
+size_t EstimateMemoryUsage(const SimpleEntryOperation& op) {
+  return 0;
+}
+
 // A helper class to insure that RunNextOperationIfNeeded() is called when
 // exiting the current stack frame.
 class SimpleEntryImpl::ScopedOperationRunner {
@@ -184,7 +193,8 @@ SimpleEntryImpl::SimpleEntryImpl(net::CacheType cache_type,
       doomed_(false),
       state_(STATE_UNINITIALIZED),
       synchronous_entry_(NULL),
-      net_log_(net::BoundNetLog::Make(net_log,
+      net_log_(
+          net::NetLogWithSource::Make(net_log,
                                       net::NetLogSourceType::DISK_CACHE_ENTRY)),
       stream_0_data_(new net::GrowableIOBuffer()) {
   static_assert(arraysize(data_size_) == arraysize(crc32s_end_offset_),
@@ -203,7 +213,7 @@ SimpleEntryImpl::SimpleEntryImpl(net::CacheType cache_type,
 void SimpleEntryImpl::SetActiveEntryProxy(
     std::unique_ptr<ActiveEntryProxy> active_entry_proxy) {
   DCHECK(!active_entry_proxy_);
-  active_entry_proxy_.reset(active_entry_proxy.release());
+  active_entry_proxy_ = std::move(active_entry_proxy);
 }
 
 int SimpleEntryImpl::OpenEntry(Entry** out_entry,
@@ -539,6 +549,15 @@ int SimpleEntryImpl::ReadyForSparseIO(const CompletionCallback& callback) {
   // entry, so there's no need to coordinate which object is performing sparse
   // I/O.  Therefore, CancelSparseIO and ReadyForSparseIO succeed instantly.
   return net::OK;
+}
+
+size_t SimpleEntryImpl::EstimateMemoryUsage() const {
+  // TODO(xunjieli): crbug.com/669108. It'd be nice to have the rest of |entry|
+  // measured, but the ownership of SimpleSynchronousEntry isn't straightforward
+  return sizeof(SimpleSynchronousEntry) +
+         base::trace_event::EstimateMemoryUsage(pending_operations_) +
+         base::trace_event::EstimateMemoryUsage(executing_operation_) +
+         (stream_0_data_ ? stream_0_data_->capacity() : 0);
 }
 
 SimpleEntryImpl::~SimpleEntryImpl() {

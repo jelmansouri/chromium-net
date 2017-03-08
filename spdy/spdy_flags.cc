@@ -6,16 +6,21 @@
 
 namespace net {
 
-// If true, SpdyFramer uses the new visitor methods OnHeaderFrameStart and
-// OnHeaderFrameEnd.  Fourth attempt.
-bool FLAGS_chromium_http2_flag_spdy_framer_use_new_methods4 = true;
+// Log compressed size of HTTP/2 requests.
+bool FLAGS_chromium_http2_flag_log_compressed_size = true;
 
-// Use SpdyHeaderBlock::AppendValueOrAddHeader when adding to headers.
-bool FLAGS_chromium_http2_flag_use_new_spdy_header_block_header_joining = true;
+// If true, remove use of SpdyFrameBuilder::OverwriteLength().
+bool FLAGS_chromium_http2_flag_remove_rewritelength = true;
 
-// If true, increase HPACK table size up to optimal size kOptTableSize if
-// clients allow it.
-bool FLAGS_chromium_reloadable_flag_increase_hpack_table_size = false;
+// Use //net/http2/hpack/decoder as HPACK entry decoder.
+bool FLAGS_chromium_http2_flag_spdy_use_hpack_decoder2 = false;
+
+// Use //net/http2/hpack/decoder as complete HPACK decoder.
+bool FLAGS_chromium_http2_flag_spdy_use_hpack_decoder3 = true;
+
+// Use Http2FrameDecoderAdapter.
+// TODO(jamessynge): Remove flag once no longer set by scripts.
+bool FLAGS_chromium_http2_flag_spdy_use_http2_frame_decoder_adapter = true;
 
 // Use NestedSpdyFramerDecoder.
 bool FLAGS_use_nested_spdy_framer_decoder = false;

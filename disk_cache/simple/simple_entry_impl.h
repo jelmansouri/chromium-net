@@ -19,8 +19,8 @@
 #include "net/disk_cache/disk_cache.h"
 #include "net/disk_cache/simple/simple_entry_format.h"
 #include "net/disk_cache/simple/simple_entry_operation.h"
-#include "net/log/net_log.h"
 #include "net/log/net_log_event_type.h"
+#include "net/log/net_log_with_source.h"
 
 namespace base {
 class TaskRunner;
@@ -29,6 +29,7 @@ class TaskRunner;
 namespace net {
 class GrowableIOBuffer;
 class IOBuffer;
+class NetLog;
 }
 
 namespace disk_cache {
@@ -120,6 +121,9 @@ class NET_EXPORT_PRIVATE SimpleEntryImpl : public Entry,
   bool CouldBeSparse() const override;
   void CancelSparseIO() override;
   int ReadyForSparseIO(const CompletionCallback& callback) override;
+
+  // Returns the estimate of dynamically allocated memory in bytes.
+  size_t EstimateMemoryUsage() const;
 
  private:
   class ScopedOperationRunner;
@@ -369,7 +373,7 @@ class NET_EXPORT_PRIVATE SimpleEntryImpl : public Entry,
 
   std::queue<SimpleEntryOperation> pending_operations_;
 
-  net::BoundNetLog net_log_;
+  net::NetLogWithSource net_log_;
 
   std::unique_ptr<SimpleEntryOperation> executing_operation_;
 

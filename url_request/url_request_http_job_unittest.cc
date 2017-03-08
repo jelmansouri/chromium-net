@@ -10,10 +10,12 @@
 #include <memory>
 
 #include "base/compiler_specific.h"
+#include "base/macros.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
 #include "base/strings/string_split.h"
+#include "base/test/histogram_tester.h"
 #include "net/base/auth.h"
 #include "net/base/request_priority.h"
 #include "net/base/sdch_observer.h"
@@ -24,6 +26,7 @@
 #include "net/log/test_net_log.h"
 #include "net/log/test_net_log_entry.h"
 #include "net/log/test_net_log_util.h"
+#include "net/net_features.h"
 #include "net/socket/socket_test_util.h"
 #include "net/test/cert_test_util.h"
 #include "net/test/gtest_util.h"
@@ -38,6 +41,12 @@
 #include "url/gurl.h"
 #include "url/url_constants.h"
 
+#if defined(OS_ANDROID)
+#include "base/android/build_info.h"
+#include "base/android/jni_android.h"
+#include "jni/AndroidNetworkLibraryTestUtil_jni.h"
+#endif
+
 using net::test::IsError;
 using net::test::IsOk;
 
@@ -47,20 +56,144 @@ namespace {
 
 using ::testing::Return;
 
+const char kSimpleGetMockWrite[] =
+    "GET / HTTP/1.1\r\n"
+    "Host: www.example.com\r\n"
+    "Connection: keep-alive\r\n"
+    "User-Agent:\r\n"
+    "Accept-Encoding: gzip, deflate\r\n"
+    "Accept-Language: en-us,fr\r\n\r\n";
+
 // Inherit from URLRequestHttpJob to expose the priority and some
 // other hidden functions.
 class TestURLRequestHttpJob : public URLRequestHttpJob {
  public:
   explicit TestURLRequestHttpJob(URLRequest* request)
-      : URLRequestHttpJob(request, request->context()->network_delegate(),
-                          request->context()->http_user_agent_settings()) {}
+      : URLRequestHttpJob(request,
+                          request->context()->network_delegate(),
+                          request->context()->http_user_agent_settings()),
+        use_null_source_stream_(false) {}
+
   ~TestURLRequestHttpJob() override {}
+
+  // URLRequestJob implementation:
+  std::unique_ptr<SourceStream> SetUpSourceStream() override {
+    if (use_null_source_stream_)
+      return nullptr;
+    return URLRequestHttpJob::SetUpSourceStream();
+  }
+
+  void set_use_null_source_stream(bool use_null_source_stream) {
+    use_null_source_stream_ = use_null_source_stream;
+  }
 
   using URLRequestHttpJob::SetPriority;
   using URLRequestHttpJob::Start;
   using URLRequestHttpJob::Kill;
   using URLRequestHttpJob::priority;
+
+ private:
+  bool use_null_source_stream_;
+
+  DISALLOW_COPY_AND_ASSIGN(TestURLRequestHttpJob);
 };
+
+class URLRequestHttpJobSetUpSourceTest : public ::testing::Test {
+ public:
+  URLRequestHttpJobSetUpSourceTest() : context_(true) {
+    test_job_interceptor_ = new TestJobInterceptor();
+    EXPECT_TRUE(test_job_factory_.SetProtocolHandler(
+        url::kHttpScheme, base::WrapUnique(test_job_interceptor_)));
+    context_.set_job_factory(&test_job_factory_);
+    context_.set_client_socket_factory(&socket_factory_);
+    context_.Init();
+  }
+
+ protected:
+  MockClientSocketFactory socket_factory_;
+  // |test_job_interceptor_| is owned by |test_job_factory_|.
+  TestJobInterceptor* test_job_interceptor_;
+  URLRequestJobFactoryImpl test_job_factory_;
+
+  TestURLRequestContext context_;
+  TestDelegate delegate_;
+};
+
+// Tests that if SetUpSourceStream() returns nullptr, the request fails.
+TEST_F(URLRequestHttpJobSetUpSourceTest, SetUpSourceFails) {
+  MockWrite writes[] = {MockWrite(kSimpleGetMockWrite)};
+  MockRead reads[] = {MockRead("HTTP/1.1 200 OK\r\n"
+                               "Content-Length: 12\r\n\r\n"),
+                      MockRead("Test Content")};
+
+  StaticSocketDataProvider socket_data(reads, arraysize(reads), writes,
+                                       arraysize(writes));
+  socket_factory_.AddSocketDataProvider(&socket_data);
+
+  std::unique_ptr<URLRequest> request = context_.CreateRequest(
+      GURL("http://www.example.com"), DEFAULT_PRIORITY, &delegate_);
+  std::unique_ptr<TestURLRequestHttpJob> job(
+      new TestURLRequestHttpJob(request.get()));
+  job->set_use_null_source_stream(true);
+  test_job_interceptor_->set_main_intercept_job(std::move(job));
+  request->Start();
+
+  base::RunLoop().Run();
+  EXPECT_EQ(ERR_CONTENT_DECODING_INIT_FAILED, delegate_.request_status());
+}
+
+// Tests that if there is an unknown content-encoding type, the raw response
+// body is passed through.
+TEST_F(URLRequestHttpJobSetUpSourceTest, UnknownEncoding) {
+  MockWrite writes[] = {MockWrite(kSimpleGetMockWrite)};
+  MockRead reads[] = {MockRead("HTTP/1.1 200 OK\r\n"
+                               "Content-Encoding: foo, gzip\r\n"
+                               "Content-Length: 12\r\n\r\n"),
+                      MockRead("Test Content")};
+
+  StaticSocketDataProvider socket_data(reads, arraysize(reads), writes,
+                                       arraysize(writes));
+  socket_factory_.AddSocketDataProvider(&socket_data);
+
+  std::unique_ptr<URLRequest> request = context_.CreateRequest(
+      GURL("http://www.example.com"), DEFAULT_PRIORITY, &delegate_);
+  std::unique_ptr<TestURLRequestHttpJob> job(
+      new TestURLRequestHttpJob(request.get()));
+  test_job_interceptor_->set_main_intercept_job(std::move(job));
+  request->Start();
+
+  base::RunLoop().Run();
+  EXPECT_EQ(OK, delegate_.request_status());
+  EXPECT_EQ("Test Content", delegate_.data_received());
+}
+
+// Received a malformed SDCH encoded response when there is no SdchManager.
+TEST_F(URLRequestHttpJobSetUpSourceTest, SdchNotAdvertisedGotSdchResponse) {
+  MockWrite writes[] = {MockWrite(kSimpleGetMockWrite)};
+  MockRead reads[] = {MockRead("HTTP/1.1 200 OK\r\n"
+                               "Content-Encoding: sdch\r\n"
+                               "Content-Length: 12\r\n\r\n"),
+                      MockRead("Test Content")};
+
+  StaticSocketDataProvider socket_data(reads, arraysize(reads), writes,
+                                       arraysize(writes));
+  socket_factory_.AddSocketDataProvider(&socket_data);
+
+  // This test expects TestURLRequestContexts to have no SdchManager.
+  DCHECK(!context_.sdch_manager());
+
+  std::unique_ptr<URLRequest> request = context_.CreateRequest(
+      GURL("http://www.example.com"), DEFAULT_PRIORITY, &delegate_);
+  std::unique_ptr<TestURLRequestHttpJob> job(
+      new TestURLRequestHttpJob(request.get()));
+  test_job_interceptor_->set_main_intercept_job(std::move(job));
+  request->Start();
+
+  base::RunLoop().Run();
+  // Pass through the raw response the same way as if received unknown encoding.
+  EXPECT_EQ(OK, delegate_.request_status());
+  EXPECT_EQ("Test Content", delegate_.data_received());
+}
 
 class URLRequestHttpJobTest : public ::testing::Test {
  protected:
@@ -135,14 +268,6 @@ class URLRequestHttpJobWithMockSocketsTest : public ::testing::Test {
   TestNetworkDelegate network_delegate_;
   std::unique_ptr<TestURLRequestContext> context_;
 };
-
-const char kSimpleGetMockWrite[] =
-    "GET / HTTP/1.1\r\n"
-    "Host: www.example.com\r\n"
-    "Connection: keep-alive\r\n"
-    "User-Agent:\r\n"
-    "Accept-Encoding: gzip, deflate\r\n"
-    "Accept-Language: en-us,fr\r\n\r\n";
 
 TEST_F(URLRequestHttpJobWithMockSocketsTest,
        TestContentLengthSuccessfulRequest) {
@@ -492,6 +617,53 @@ TEST_F(URLRequestHttpJobWithMockSocketsTest,
   EXPECT_EQ(0, network_delegate_.total_network_bytes_received());
 }
 
+TEST_F(URLRequestHttpJobWithMockSocketsTest, TestHttpTimeToFirstByte) {
+  base::HistogramTester histograms;
+  MockWrite writes[] = {MockWrite(kSimpleGetMockWrite)};
+  MockRead reads[] = {MockRead("HTTP/1.1 200 OK\r\n"
+                               "Content-Length: 12\r\n\r\n"),
+                      MockRead("Test Content")};
+
+  StaticSocketDataProvider socket_data(reads, arraysize(reads), writes,
+                                       arraysize(writes));
+  socket_factory_.AddSocketDataProvider(&socket_data);
+
+  TestDelegate delegate;
+  std::unique_ptr<URLRequest> request = context_->CreateRequest(
+      GURL("http://www.example.com"), DEFAULT_PRIORITY, &delegate);
+  histograms.ExpectTotalCount("Net.HttpTimeToFirstByte", 0);
+
+  request->Start();
+  base::RunLoop().Run();
+
+  EXPECT_THAT(delegate.request_status(), IsOk());
+  histograms.ExpectTotalCount("Net.HttpTimeToFirstByte", 1);
+}
+
+TEST_F(URLRequestHttpJobWithMockSocketsTest,
+       TestHttpTimeToFirstByteForCancelledTask) {
+  base::HistogramTester histograms;
+  MockWrite writes[] = {MockWrite(kSimpleGetMockWrite)};
+  MockRead reads[] = {MockRead("HTTP/1.1 200 OK\r\n"
+                               "Content-Length: 12\r\n\r\n"),
+                      MockRead("Test Content")};
+
+  StaticSocketDataProvider socket_data(reads, arraysize(reads), writes,
+                                       arraysize(writes));
+  socket_factory_.AddSocketDataProvider(&socket_data);
+
+  TestDelegate delegate;
+  std::unique_ptr<URLRequest> request = context_->CreateRequest(
+      GURL("http://www.example.com"), DEFAULT_PRIORITY, &delegate);
+
+  request->Start();
+  request->Cancel();
+  base::RunLoop().Run();
+
+  EXPECT_THAT(delegate.request_status(), IsError(ERR_ABORTED));
+  histograms.ExpectTotalCount("Net.HttpTimeToFirstByte", 0);
+}
+
 TEST_F(URLRequestHttpJobTest, TestCancelWhileReadingCookies) {
   DelayedCookieMonster cookie_monster;
   TestURLRequestContext context(true);
@@ -591,12 +763,12 @@ TEST_F(URLRequestHttpJobTest, HSTSInternalRedirectTest) {
     {"http://upgrade.test:123/", true, "https://upgrade.test:123/"},
     {"http://no-upgrade.test/", false, "http://no-upgrade.test/"},
     {"http://no-upgrade.test:123/", false, "http://no-upgrade.test:123/"},
-#if defined(ENABLE_WEBSOCKETS)
+#if BUILDFLAG(ENABLE_WEBSOCKETS)
     {"ws://upgrade.test/", true, "wss://upgrade.test/"},
     {"ws://upgrade.test:123/", true, "wss://upgrade.test:123/"},
     {"ws://no-upgrade.test/", false, "ws://no-upgrade.test/"},
     {"ws://no-upgrade.test:123/", false, "ws://no-upgrade.test:123/"},
-#endif  // defined(ENABLE_WEBSOCKETS)
+#endif  // BUILDFLAG(ENABLE_WEBSOCKETS)
   };
 
   for (const auto& test : cases) {
@@ -658,6 +830,44 @@ class URLRequestHttpJobWithSdchSupportTest : public ::testing::Test {
   MockClientSocketFactory socket_factory_;
   TestURLRequestContext context_;
 };
+
+// Received a malformed SDCH encoded response that has no valid dictionary id.
+TEST_F(URLRequestHttpJobWithSdchSupportTest,
+       SdchAdvertisedGotMalformedSdchResponse) {
+  MockWrite writes[] = {
+      MockWrite("GET / HTTP/1.1\r\n"
+                "Host: www.example.com\r\n"
+                "Connection: keep-alive\r\n"
+                "User-Agent:\r\n"
+                "Accept-Encoding: gzip, deflate, sdch\r\n"
+                "Accept-Language: en-us,fr\r\n\r\n")};
+  MockRead reads[] = {MockRead("HTTP/1.1 200 OK\r\n"
+                               "Content-Encoding: sdch\r\n"
+                               "Content-Length: 12\r\n\r\n"),
+                      MockRead("Test Content")};
+
+  StaticSocketDataProvider socket_data(reads, arraysize(reads), writes,
+                                       arraysize(writes));
+  socket_factory_.AddSocketDataProvider(&socket_data);
+
+  MockSdchObserver sdch_observer;
+  SdchManager sdch_manager;
+  sdch_manager.AddObserver(&sdch_observer);
+  context_.set_sdch_manager(&sdch_manager);
+  TestDelegate delegate;
+  std::unique_ptr<URLRequest> request = context_.CreateRequest(
+      GURL("http://www.example.com"), DEFAULT_PRIORITY, &delegate);
+  request->Start();
+
+  base::RunLoop().Run();
+  // SdchPolicyDelegate::OnDictionaryIdError() detects that the response is
+  // malformed (missing dictionary), and will issue a pass-through of the raw
+  // response.
+  EXPECT_EQ(OK, delegate.request_status());
+  EXPECT_EQ("Test Content", delegate.data_received());
+  // Cleanup manager.
+  sdch_manager.RemoveObserver(&sdch_observer);
+}
 
 TEST_F(URLRequestHttpJobWithSdchSupportTest, GetDictionary) {
   MockWrite writes[] = {
@@ -782,6 +992,46 @@ TEST_F(URLRequestHttpJobWithBrotliSupportTest, BrotliAdvertisement) {
             request->GetTotalReceivedBytes());
 }
 
+#if defined(OS_ANDROID)
+TEST_F(URLRequestHttpJobTest, AndroidCleartextPermittedTest) {
+  context_.set_check_cleartext_permitted(true);
+
+  struct TestCase {
+    const char* url;
+    bool cleartext_permitted;
+    bool should_block;
+  } cases[] = {
+      {"http://blocked.test/", true, false},
+      {"https://blocked.test/", true, false},
+      {"http://blocked.test/", false, true},
+      {"https://blocked.test/", false, false},
+  };
+
+  for (const TestCase& test : cases) {
+    JNIEnv* env = base::android::AttachCurrentThread();
+    Java_AndroidNetworkLibraryTestUtil_setUpSecurityPolicyForTesting(
+        env, test.cleartext_permitted);
+
+    TestDelegate delegate;
+    std::unique_ptr<URLRequest> request =
+        context_.CreateRequest(GURL(test.url), DEFAULT_PRIORITY, &delegate);
+    request->Start();
+    base::RunLoop().Run();
+
+    int sdk_int = base::android::BuildInfo::GetInstance()->sdk_int();
+    bool expect_blocked = (sdk_int >= base::android::SDK_VERSION_MARSHMALLOW &&
+                           test.should_block);
+    if (expect_blocked) {
+      EXPECT_THAT(delegate.request_status(),
+                  IsError(ERR_CLEARTEXT_NOT_PERMITTED));
+    } else {
+      // Should fail since there's no test server running
+      EXPECT_THAT(delegate.request_status(), IsError(ERR_FAILED));
+    }
+  }
+}
+#endif
+
 // This base class just serves to set up some things before the TestURLRequest
 // constructor is called.
 class URLRequestHttpJobWebSocketTestBase : public ::testing::Test {
@@ -821,7 +1071,7 @@ class URLRequestHttpJobWebSocketTest
 class MockCreateHelper : public WebSocketHandshakeStreamBase::CreateHelper {
  public:
   // GoogleMock does not appear to play nicely with move-only types like
-  // scoped_ptr, so this forwarding method acts as a workaround.
+  // std::unique_ptr, so this forwarding method acts as a workaround.
   WebSocketHandshakeStreamBase* CreateBasicStream(
       std::unique_ptr<ClientSocketHandle> connection,
       bool using_proxy) override {
@@ -837,7 +1087,7 @@ class MockCreateHelper : public WebSocketHandshakeStreamBase::CreateHelper {
                                              bool));
 };
 
-#if defined(ENABLE_WEBSOCKETS)
+#if BUILDFLAG(ENABLE_WEBSOCKETS)
 
 class FakeWebSocketHandshakeStream : public WebSocketHandshakeStreamBase {
  public:
@@ -850,7 +1100,7 @@ class FakeWebSocketHandshakeStream : public WebSocketHandshakeStreamBase {
   // Fake implementation of HttpStreamBase methods.
   int InitializeStream(const HttpRequestInfo* request_info,
                        RequestPriority priority,
-                       const BoundNetLog& net_log,
+                       const NetLogWithSource& net_log,
                        const CompletionCallback& callback) override {
     initialize_stream_was_called_ = true;
     return ERR_IO_PENDING;
@@ -894,8 +1144,9 @@ class FakeWebSocketHandshakeStream : public WebSocketHandshakeStreamBase {
 
   bool GetRemoteEndpoint(IPEndPoint* endpoint) override { return false; }
 
-  Error GetSignedEKMForTokenBinding(crypto::ECPrivateKey* key,
-                                    std::vector<uint8_t>* out) override {
+  Error GetTokenBindingSignature(crypto::ECPrivateKey* key,
+                                 TokenBindingType tb_type,
+                                 std::vector<uint8_t>* out) override {
     ADD_FAILURE();
     return ERR_NOT_IMPLEMENTED;
   }
@@ -905,10 +1156,6 @@ class FakeWebSocketHandshakeStream : public WebSocketHandshakeStreamBase {
   void PopulateNetErrorDetails(NetErrorDetails* details) override { return; }
 
   void SetPriority(RequestPriority priority) override {}
-
-  UploadProgress GetUploadProgress() const override {
-    return UploadProgress();
-  }
 
   HttpStream* RenewStreamForAuth() override { return nullptr; }
 
@@ -945,7 +1192,7 @@ TEST_F(URLRequestHttpJobWebSocketTest, CreateHelperPassedThrough) {
   EXPECT_TRUE(fake_handshake_stream->initialize_stream_was_called());
 }
 
-#endif  // defined(ENABLE_WEBSOCKETS)
+#endif  // BUILDFLAG(ENABLE_WEBSOCKETS)
 
 }  // namespace
 

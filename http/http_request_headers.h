@@ -10,15 +10,21 @@
 #ifndef NET_HTTP_HTTP_REQUEST_HEADERS_H_
 #define NET_HTTP_HTTP_REQUEST_HEADERS_H_
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "base/macros.h"
 #include "base/strings/string_piece.h"
 #include "net/base/net_export.h"
-#include "net/log/net_log.h"
+
+namespace base {
+class Value;
+}
 
 namespace net {
+
+class NetLogCaptureMode;
 
 class NET_EXPORT HttpRequestHeaders {
  public:
@@ -67,9 +73,11 @@ class NET_EXPORT HttpRequestHeaders {
   static const char kCookie[];
   static const char kContentLength[];
   static const char kHost[];
+  static const char kIfMatch[];
   static const char kIfModifiedSince[];
   static const char kIfNoneMatch[];
   static const char kIfRange[];
+  static const char kIfUnmodifiedSince[];
   static const char kOrigin[];
   static const char kPragma[];
   static const char kProxyAuthorization[];

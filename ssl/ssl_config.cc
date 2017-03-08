@@ -12,8 +12,6 @@ const uint16_t kDefaultSSLVersionMin = SSL_PROTOCOL_VERSION_TLS1;
 
 const uint16_t kDefaultSSLVersionMax = SSL_PROTOCOL_VERSION_TLS1_2;
 
-const uint16_t kDefaultSSLVersionFallbackMin = SSL_PROTOCOL_VERSION_TLS1_2;
-
 SSLConfig::CertAndStatus::CertAndStatus() = default;
 SSLConfig::CertAndStatus::CertAndStatus(scoped_refptr<X509Certificate> cert_arg,
                                         CertStatus status)
@@ -25,19 +23,17 @@ SSLConfig::CertAndStatus::~CertAndStatus() = default;
 SSLConfig::SSLConfig()
     : rev_checking_enabled(false),
       rev_checking_required_local_anchors(false),
-      sha1_local_anchors_enabled(false),
+      sha1_local_anchors_enabled(true),
+      common_name_fallback_local_anchors_enabled(true),
       version_min(kDefaultSSLVersionMin),
       version_max(kDefaultSSLVersionMax),
-      version_fallback_min(kDefaultSSLVersionFallbackMin),
       deprecated_cipher_suites_enabled(false),
-      dhe_enabled(false),
       channel_id_enabled(true),
       false_start_enabled(true),
       signed_cert_timestamps_enabled(true),
       require_ecdhe(false),
       send_client_cert(false),
       verify_ev_cert(false),
-      version_fallback(false),
       cert_io_enabled(true),
       renego_allowed_default(false) {}
 
@@ -69,6 +65,8 @@ int SSLConfig::GetCertVerifyFlags() const {
     flags |= CertVerifier::VERIFY_REV_CHECKING_REQUIRED_LOCAL_ANCHORS;
   if (sha1_local_anchors_enabled)
     flags |= CertVerifier::VERIFY_ENABLE_SHA1_LOCAL_ANCHORS;
+  if (common_name_fallback_local_anchors_enabled)
+    flags |= CertVerifier::VERIFY_ENABLE_COMMON_NAME_FALLBACK_LOCAL_ANCHORS;
   return flags;
 }
 

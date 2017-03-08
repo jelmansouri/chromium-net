@@ -42,8 +42,7 @@ class PickleIterator;
 
 namespace net {
 
-class CRLSet;
-class CertVerifyResult;
+class X509Certificate;
 
 typedef std::vector<scoped_refptr<X509Certificate> > CertificateList;
 
@@ -79,6 +78,14 @@ class NET_EXPORT X509Certificate
     kPublicKeyTypeECDSA,
     kPublicKeyTypeDH,
     kPublicKeyTypeECDH
+  };
+
+  enum SignatureHashAlgorithm {
+    kSignatureHashAlgorithmMd2,
+    kSignatureHashAlgorithmMd4,
+    kSignatureHashAlgorithmMd5,
+    kSignatureHashAlgorithmSha1,
+    kSignatureHashAlgorithmOther,
   };
 
   enum Format {
@@ -146,20 +153,8 @@ class NET_EXPORT X509Certificate
                                                         size_t length);
 
 #if defined(USE_NSS_CERTS)
-  // Create an X509Certificate from the DER-encoded representation.
-  // |nickname| can be NULL if an auto-generated nickname is desired.
-  // Returns NULL on failure.
-  //
-  // This function differs from CreateFromBytes in that it takes a
-  // nickname that will be used when the certificate is imported into PKCS#11.
-  static scoped_refptr<X509Certificate> CreateFromBytesWithNickname(
-      const char* data,
-      size_t length,
-      const char* nickname);
-
   // The default nickname of the certificate, based on the certificate type
-  // passed in.  If this object was created using CreateFromBytesWithNickname,
-  // then this will return the nickname specified upon creation.
+  // passed in.
   std::string GetDefaultNickname(CertType type) const;
 #endif
 
@@ -292,11 +287,11 @@ class NET_EXPORT X509Certificate
   // Verifies that |hostname| matches this certificate.
   // Does not verify that the certificate is valid, only that the certificate
   // matches this host.
-  // Returns true if it matches, and updates |*common_name_fallback_used|,
-  // setting it to true if a fallback to the CN was used, rather than
-  // subjectAltName.
+  // If |allow_common_name_fallback| is set to true, and iff no SANs are
+  // present of type dNSName or iPAddress, then fallback to using the
+  // certificate's commonName field in the Subject.
   bool VerifyNameMatch(const std::string& hostname,
-                       bool* common_name_fallback_used) const;
+                       bool allow_common_name_fallback) const;
 
   // Obtains the DER encoded certificate data for |cert_handle|. On success,
   // returns true and writes the DER encoded certificate to |*der_encoded|.
@@ -327,6 +322,15 @@ class NET_EXPORT X509Certificate
   static void GetPublicKeyInfo(OSCertHandle cert_handle,
                                size_t* size_bits,
                                PublicKeyType* type);
+
+  // Returns the digest algorithm used in |cert_handle|'s signature.
+  // If the digest algorithm cannot be determined, or if it is not one
+  // of the explicitly enumerated values, kSignatureHashAlgorithmOther
+  // will be returned.
+  // NOTE: No validation of the signature is performed, and thus invalid
+  // signatures may result in seemingly meaningful values.
+  static SignatureHashAlgorithm GetSignatureHashAlgorithm(
+      OSCertHandle cert_handle);
 
   // Returns the OSCertHandle of this object. Because of caching, this may
   // differ from the OSCertHandle originally supplied during initialization.
@@ -416,14 +420,14 @@ class NET_EXPORT X509Certificate
   // extension, if present. Note these IP addresses are NOT ascii-encoded:
   // they must be 4 or 16 bytes of network-ordered data, for IPv4 and IPv6
   // addresses, respectively.
-  // |common_name_fallback_used| will be updated to true if cert_common_name
-  // was used to match the hostname, or false if either of the |cert_san_*|
-  // parameters was used to match the hostname.
+  // If |allow_common_name_fallback| is true, then the |cert_common_name| will
+  // be used if the |cert_san_dns_names| and |cert_san_ip_addrs| parameters are
+  // empty.
   static bool VerifyHostname(const std::string& hostname,
                              const std::string& cert_common_name,
                              const std::vector<std::string>& cert_san_dns_names,
                              const std::vector<std::string>& cert_san_ip_addrs,
-                             bool* common_name_fallback_used);
+                             bool allow_common_name_fallback);
 
   // Reads a single certificate from |pickle_iter| and returns a
   // platform-specific certificate handle. The format of the certificate
@@ -461,14 +465,6 @@ class NET_EXPORT X509Certificate
   // Untrusted intermediate certificates associated with this certificate
   // that may be needed for chain building.
   OSCertHandles intermediate_ca_certs_;
-
-#if defined(USE_NSS_CERTS)
-  // This stores any default nickname that has been set on the certificate
-  // at creation time with CreateFromBytesWithNickname.
-  // If this is empty, then GetDefaultNickname will return a generated name
-  // based on the type of the certificate.
-  std::string default_nickname_;
-#endif
 
   DISALLOW_COPY_AND_ASSIGN(X509Certificate);
 };

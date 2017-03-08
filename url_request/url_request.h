@@ -14,6 +14,7 @@
 #include "base/debug/leak_tracker.h"
 #include "base/logging.h"
 #include "base/macros.h"
+#include "base/optional.h"
 #include "base/strings/string16.h"
 #include "base/supports_user_data.h"
 #include "base/threading/non_thread_safe.h"
@@ -30,7 +31,8 @@
 #include "net/cookies/canonical_cookie.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_response_info.h"
-#include "net/log/net_log.h"
+#include "net/log/net_log_with_source.h"
+#include "net/proxy/proxy_server.h"
 #include "net/socket/connection_attempts.h"
 #include "net/url_request/url_request_status.h"
 #include "url/gurl.h"
@@ -38,10 +40,6 @@
 
 namespace base {
 class Value;
-
-namespace debug {
-class StackTrace;
-}  // namespace debug
 }  // namespace base
 
 namespace net {
@@ -83,7 +81,11 @@ class NET_EXPORT URLRequest : NON_EXPORTED_BASE(public base::NonThreadSafe),
 
   // A ReferrerPolicy for the request can be set with
   // set_referrer_policy() and controls the contents of the Referer
-  // header when URLRequest follows server redirects.
+  // header when URLRequest follows server redirects. Note that setting
+  // a ReferrerPolicy on the request has no effect on the Referer header
+  // of the initial leg of the request; the caller is responsible for
+  // setting the initial Referer, and the ReferrerPolicy only controls
+  // what happens to the Referer while following redirects.
   enum ReferrerPolicy {
     // Clear the referrer header if the protocol changes from HTTPS to
     // HTTP. This is the default behavior of URLRequest.
@@ -298,9 +300,13 @@ class NET_EXPORT URLRequest : NON_EXPORTED_BASE(public base::NonThreadSafe),
   //
   // This value is used to perform the cross-origin check specified in Section
   // 4.3 of https://tools.ietf.org/html/draft-west-first-party-cookies.
-  const url::Origin& initiator() const { return initiator_; }
+  //
+  // Note: the initiator can be null for browser-initiated top level
+  // navigations. This is different from a unique Origin (e.g. in sandboxed
+  // iframes).
+  const base::Optional<url::Origin>& initiator() const { return initiator_; }
   // This method may only be called before Start().
-  void set_initiator(const url::Origin& initiator);
+  void set_initiator(const base::Optional<url::Origin>& initiator);
 
   // The request method, as an uppercase string.  "GET" is the default value.
   // The request method may only be changed before Start() is called and
@@ -584,10 +590,6 @@ class NET_EXPORT URLRequest : NON_EXPORTED_BASE(public base::NonThreadSafe),
   // response to an OnReceivedRedirect call.
   void FollowDeferredRedirect();
 
-  // This method must be called to resume network communications that were
-  // deferred in response to an OnBeforeNetworkStart call.
-  void ResumeNetworkStart();
-
   // One of the following two methods should be called in response to an
   // OnAuthRequired() callback (and only then).
   // SetAuth will reissue the request with the given credentials.
@@ -609,7 +611,7 @@ class NET_EXPORT URLRequest : NON_EXPORTED_BASE(public base::NonThreadSafe),
   // Used to specify the context (cookie store, cache) for this request.
   const URLRequestContext* context() const;
 
-  const BoundNetLog& net_log() const { return net_log_; }
+  const NetLogWithSource& net_log() const { return net_log_; }
 
   // Returns the expected content size if available
   int64_t GetExpectedContentSize() const;
@@ -635,9 +637,7 @@ class NET_EXPORT URLRequest : NON_EXPORTED_BASE(public base::NonThreadSafe),
 
   // Available at NetworkDelegate::NotifyHeadersReceived() time, which is before
   // the more general response_info() is available, even though it is a subset.
-  const HostPortPair& proxy_server() const {
-    return proxy_server_;
-  }
+  const ProxyServer& proxy_server() const { return proxy_server_; }
 
   // Gets the connection attempts made in the process of servicing this
   // URLRequest. Only guaranteed to be valid if called after the request fails
@@ -703,11 +703,6 @@ class NET_EXPORT URLRequest : NON_EXPORTED_BASE(public base::NonThreadSafe),
   void RestartWithJob(URLRequestJob* job);
   void PrepareToRestart();
 
-  // Detaches the job from this request in preparation for this object going
-  // away or the job being replaced. The job will not call us back when it has
-  // been orphaned.
-  void OrphanJob();
-
   // Cancels the request and set the error and ssl info for this request to the
   // passed values. Returns the error that was set.
   int DoCancel(int error, const SSLInfo& ssl_info);
@@ -755,14 +750,14 @@ class NET_EXPORT URLRequest : NON_EXPORTED_BASE(public base::NonThreadSafe),
   NetworkDelegate* network_delegate_;
 
   // Tracks the time spent in various load states throughout this request.
-  BoundNetLog net_log_;
+  NetLogWithSource net_log_;
 
   std::unique_ptr<URLRequestJob> job_;
   std::unique_ptr<UploadDataStream> upload_data_stream_;
 
   std::vector<GURL> url_chain_;
   GURL first_party_for_cookies_;
-  url::Origin initiator_;
+  base::Optional<url::Origin> initiator_;
   GURL delegate_redirect_url_;
   std::string method_;  // "GET", "POST", etc. Should be all uppercase.
   std::string referrer_;
@@ -853,7 +848,7 @@ class NET_EXPORT URLRequest : NON_EXPORTED_BASE(public base::NonThreadSafe),
   LoadTimingInfo load_timing_info_;
 
   // The proxy server used for this request, if any.
-  HostPortPair proxy_server_;
+  ProxyServer proxy_server_;
 
   // The raw header size of the response.
   int raw_header_size_;

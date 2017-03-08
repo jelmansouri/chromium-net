@@ -18,8 +18,9 @@
 #include "base/trace_event/trace_event.h"
 #include "base/values.h"
 #include "net/base/net_errors.h"
-#include "net/log/net_log.h"
+#include "net/base/trace_constants.h"
 #include "net/log/net_log_event_type.h"
+#include "net/log/net_log_source.h"
 #include "net/log/net_log_source_type.h"
 #include "net/socket/client_socket_handle.h"
 #include "net/socket/client_socket_pool_base.h"
@@ -40,14 +41,15 @@ WebSocketTransportConnectJob::WebSocketTransportConnectJob(
     ClientSocketHandle* handle,
     Delegate* delegate,
     NetLog* pool_net_log,
-    const BoundNetLog& request_net_log)
-    : ConnectJob(
-          group_name,
-          timeout_duration,
-          priority,
-          respect_limits,
-          delegate,
-          BoundNetLog::Make(pool_net_log, NetLogSourceType::CONNECT_JOB)),
+    const NetLogWithSource& request_net_log)
+    : ConnectJob(group_name,
+                 timeout_duration,
+                 priority,
+                 respect_limits,
+                 delegate,
+                 NetLogWithSource::Make(
+                     pool_net_log,
+                     NetLogSourceType::WEB_SOCKET_TRANSPORT_CONNECT_JOB)),
       params_(params),
       resolver_(host_resolver),
       client_socket_factory_(client_socket_factory),
@@ -123,7 +125,8 @@ int WebSocketTransportConnectJob::DoResolveHost() {
 }
 
 int WebSocketTransportConnectJob::DoResolveHostComplete(int result) {
-  TRACE_EVENT0("net", "WebSocketTransportConnectJob::DoResolveHostComplete");
+  TRACE_EVENT0(kNetTracingCategory,
+               "WebSocketTransportConnectJob::DoResolveHostComplete");
   connect_timing_.dns_end = base::TimeTicks::Now();
   // Overwrite connection start time, since for connections that do not go
   // through proxies, |connect_start| should not include dns lookup time.
@@ -287,7 +290,7 @@ WebSocketTransportClientSocketPool::WebSocketTransportClientSocketPool(
                                 max_sockets_per_group,
                                 host_resolver,
                                 client_socket_factory,
-                                NULL,
+                                nullptr,
                                 net_log),
       connect_job_delegate_(this),
       pool_net_log_(net_log),
@@ -324,7 +327,7 @@ int WebSocketTransportClientSocketPool::RequestSocket(
     RespectLimits respect_limits,
     ClientSocketHandle* handle,
     const CompletionCallback& callback,
-    const BoundNetLog& request_net_log) {
+    const NetLogWithSource& request_net_log) {
   DCHECK(params);
   const scoped_refptr<TransportSocketParams>& casted_params =
       *static_cast<const scoped_refptr<TransportSocketParams>*>(params);
@@ -385,8 +388,21 @@ void WebSocketTransportClientSocketPool::RequestSockets(
     const std::string& group_name,
     const void* params,
     int num_sockets,
-    const BoundNetLog& net_log) {
+    const NetLogWithSource& net_log) {
   NOTIMPLEMENTED();
+}
+
+void WebSocketTransportClientSocketPool::SetPriority(
+    const std::string& group_name,
+    ClientSocketHandle* handle,
+    RequestPriority priority) {
+  // Since sockets requested by RequestSocket are bound early and
+  // stalled_request_{queue,map} don't take priorities into account, there's
+  // nothing to do within the pool to change priority or the request.
+  // TODO(rdsmith, ricea): Make stalled_request_{queue,map} take priorities
+  // into account.
+  // TODO(rdsmith): Investigate plumbing the reprioritization request to the
+  // connect job.
 }
 
 void WebSocketTransportClientSocketPool::CancelRequest(
@@ -430,7 +446,7 @@ void WebSocketTransportClientSocketPool::FlushWithError(int error) {
        ++it) {
     InvokeUserCallbackLater(
         it->second->handle(), it->second->callback(), error);
-    delete it->second, it->second = NULL;
+    delete it->second, it->second = nullptr;
   }
   pending_connects_.clear();
   for (StalledRequestQueue::iterator it = stalled_request_queue_.begin();
@@ -444,6 +460,11 @@ void WebSocketTransportClientSocketPool::FlushWithError(int error) {
 }
 
 void WebSocketTransportClientSocketPool::CloseIdleSockets() {
+  // We have no idle sockets.
+}
+
+void WebSocketTransportClientSocketPool::CloseIdleSocketsInGroup(
+    const std::string& group_name) {
   // We have no idle sockets.
 }
 
@@ -501,7 +522,7 @@ bool WebSocketTransportClientSocketPool::TryHandOutSocket(
 
   std::unique_ptr<StreamSocket> socket = job->PassSocket();
   ClientSocketHandle* const handle = job->handle();
-  BoundNetLog request_net_log = job->request_net_log();
+  NetLogWithSource request_net_log = job->request_net_log();
   LoadTimingInfo::ConnectTiming connect_timing = job->connect_timing();
 
   if (result == OK) {
@@ -551,7 +572,7 @@ void WebSocketTransportClientSocketPool::OnConnectJobComplete(
   bool delete_succeeded = DeleteJob(handle);
   DCHECK(delete_succeeded);
 
-  job = NULL;
+  job = nullptr;
 
   if (!handed_out_socket)
     ActivateStalledRequest();
@@ -589,7 +610,7 @@ void WebSocketTransportClientSocketPool::HandOutSocket(
     std::unique_ptr<StreamSocket> socket,
     const LoadTimingInfo::ConnectTiming& connect_timing,
     ClientSocketHandle* handle,
-    const BoundNetLog& net_log) {
+    const NetLogWithSource& net_log) {
   DCHECK(socket);
   DCHECK_EQ(ClientSocketHandle::UNUSED, handle->reuse_type());
   DCHECK_EQ(0, handle->idle_time().InMicroseconds());
@@ -623,7 +644,7 @@ bool WebSocketTransportClientSocketPool::DeleteJob(ClientSocketHandle* handle) {
   // (usually because of a failure) then it can trigger that job to be
   // deleted. |it| remains valid because std::map guarantees that erase() does
   // not invalid iterators to other entries.
-  delete it->second, it->second = NULL;
+  delete it->second, it->second = nullptr;
   DCHECK(pending_connects_.find(handle) == it);
   pending_connects_.erase(it);
   return true;
@@ -688,7 +709,7 @@ WebSocketTransportClientSocketPool::StalledRequest::StalledRequest(
     RequestPriority priority,
     ClientSocketHandle* handle,
     const CompletionCallback& callback,
-    const BoundNetLog& net_log)
+    const NetLogWithSource& net_log)
     : params(params),
       priority(priority),
       handle(handle),

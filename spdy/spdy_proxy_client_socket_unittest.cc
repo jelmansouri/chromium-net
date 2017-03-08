@@ -4,6 +4,7 @@
 
 #include "net/spdy/spdy_proxy_client_socket.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
@@ -17,8 +18,8 @@
 #include "net/dns/mock_host_resolver.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_response_info.h"
-#include "net/log/net_log.h"
 #include "net/log/net_log_event_type.h"
+#include "net/log/net_log_source.h"
 #include "net/log/test_net_log.h"
 #include "net/log/test_net_log_entry.h"
 #include "net/log/test_net_log_util.h"
@@ -30,7 +31,9 @@
 #include "net/spdy/spdy_protocol.h"
 #include "net/spdy/spdy_session_pool.h"
 #include "net/spdy/spdy_test_util_common.h"
+#include "net/test/cert_test_util.h"
 #include "net/test/gtest_util.h"
+#include "net/test/test_data_directory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/platform_test.h"
@@ -181,15 +184,20 @@ void SpdyProxyClientSocketTest::Initialize(MockRead* reads,
   data_.reset(
       new SequencedSocketData(reads, reads_count, writes, writes_count));
   data_->set_connect_data(connect_data_);
-
   session_deps_.socket_factory->AddSocketDataProvider(data_.get());
+
+  SSLSocketDataProvider ssl(SYNCHRONOUS, OK);
+  ssl.cert = ImportCertFromFile(GetTestCertsDirectory(), "spdy_pooling.pem");
+  ASSERT_TRUE(ssl.cert);
+  session_deps_.socket_factory->AddSSLSocketDataProvider(&ssl);
+
   session_deps_.host_resolver->set_synchronous_mode(true);
 
   session_ = SpdySessionDependencies::SpdyCreateSession(&session_deps_);
 
   // Creates the SPDY session and stream.
-  spdy_session_ = CreateInsecureSpdySession(
-      session_.get(), endpoint_spdy_session_key_, BoundNetLog());
+  spdy_session_ = CreateSecureSpdySession(
+      session_.get(), endpoint_spdy_session_key_, NetLogWithSource());
   base::WeakPtr<SpdyStream> spdy_stream(
       CreateStreamSynchronously(
           SPDY_BIDIRECTIONAL_STREAM, spdy_session_, url_, LOWEST,
@@ -424,7 +432,7 @@ TEST_F(SpdyProxyClientSocketTest, ConnectWithAuthCredentials) {
 TEST_F(SpdyProxyClientSocketTest, ConnectRedirects) {
   SpdySerializedFrame conn(ConstructConnectRequestFrame());
   SpdySerializedFrame rst(
-      spdy_util_.ConstructSpdyRstStream(1, RST_STREAM_CANCEL));
+      spdy_util_.ConstructSpdyRstStream(1, ERROR_CODE_CANCEL));
   MockWrite writes[] = {
       CreateMockWrite(conn, 0, SYNCHRONOUS), CreateMockWrite(rst, 3),
   };
@@ -479,7 +487,7 @@ TEST_F(SpdyProxyClientSocketTest, ConnectFails) {
 TEST_F(SpdyProxyClientSocketTest, WasEverUsedReturnsCorrectValues) {
   SpdySerializedFrame conn(ConstructConnectRequestFrame());
   SpdySerializedFrame rst(
-      spdy_util_.ConstructSpdyRstStream(1, RST_STREAM_CANCEL));
+      spdy_util_.ConstructSpdyRstStream(1, ERROR_CODE_CANCEL));
   MockWrite writes[] = {
       CreateMockWrite(conn, 0, SYNCHRONOUS), CreateMockWrite(rst, 3),
   };
@@ -830,8 +838,8 @@ TEST_F(SpdyProxyClientSocketTest, ReadErrorResponseBody) {
   SpdySerializedFrame msg1(ConstructBodyFrame(kMsg1, kLen1));
   SpdySerializedFrame msg2(ConstructBodyFrame(kMsg2, kLen2));
   MockRead reads[] = {
-      CreateMockRead(resp, 1, ASYNC), CreateMockRead(msg1, 2, ASYNC),
-      CreateMockRead(msg2, 3, ASYNC), MockRead(ASYNC, 0, 4),  // EOF
+      CreateMockRead(resp, 1, ASYNC), CreateMockRead(msg1, 2, SYNCHRONOUS),
+      CreateMockRead(msg2, 3, SYNCHRONOUS), MockRead(SYNCHRONOUS, 0, 4),  // EOF
   };
 
   Initialize(reads, arraysize(reads), writes, arraysize(writes));
@@ -970,7 +978,7 @@ TEST_F(SpdyProxyClientSocketTest, PendingReadOnCloseReturnsZero) {
 TEST_F(SpdyProxyClientSocketTest, ReadOnDisconnectSocketReturnsNotConnected) {
   SpdySerializedFrame conn(ConstructConnectRequestFrame());
   SpdySerializedFrame rst(
-      spdy_util_.ConstructSpdyRstStream(1, RST_STREAM_CANCEL));
+      spdy_util_.ConstructSpdyRstStream(1, ERROR_CODE_CANCEL));
   MockWrite writes[] = {
       CreateMockWrite(conn, 0, SYNCHRONOUS), CreateMockWrite(rst, 3),
   };
@@ -1055,7 +1063,7 @@ TEST_F(SpdyProxyClientSocketTest, WriteOnClosedStream) {
 TEST_F(SpdyProxyClientSocketTest, WriteOnDisconnectedSocket) {
   SpdySerializedFrame conn(ConstructConnectRequestFrame());
   SpdySerializedFrame rst(
-      spdy_util_.ConstructSpdyRstStream(1, RST_STREAM_CANCEL));
+      spdy_util_.ConstructSpdyRstStream(1, ERROR_CODE_CANCEL));
   MockWrite writes[] = {
       CreateMockWrite(conn, 0, SYNCHRONOUS), CreateMockWrite(rst, 3),
   };
@@ -1116,7 +1124,7 @@ TEST_F(SpdyProxyClientSocketTest, WritePendingOnClose) {
 TEST_F(SpdyProxyClientSocketTest, DisconnectWithWritePending) {
   SpdySerializedFrame conn(ConstructConnectRequestFrame());
   SpdySerializedFrame rst(
-      spdy_util_.ConstructSpdyRstStream(1, RST_STREAM_CANCEL));
+      spdy_util_.ConstructSpdyRstStream(1, ERROR_CODE_CANCEL));
   MockWrite writes[] = {
       CreateMockWrite(conn, 0, SYNCHRONOUS), CreateMockWrite(rst, 3),
   };
@@ -1150,7 +1158,7 @@ TEST_F(SpdyProxyClientSocketTest, DisconnectWithWritePending) {
 TEST_F(SpdyProxyClientSocketTest, DisconnectWithReadPending) {
   SpdySerializedFrame conn(ConstructConnectRequestFrame());
   SpdySerializedFrame rst(
-      spdy_util_.ConstructSpdyRstStream(1, RST_STREAM_CANCEL));
+      spdy_util_.ConstructSpdyRstStream(1, ERROR_CODE_CANCEL));
   MockWrite writes[] = {
       CreateMockWrite(conn, 0, SYNCHRONOUS), CreateMockWrite(rst, 3),
   };
@@ -1189,7 +1197,7 @@ TEST_F(SpdyProxyClientSocketTest, RstWithReadAndWritePending) {
 
   SpdySerializedFrame resp(ConstructConnectReplyFrame());
   SpdySerializedFrame rst(
-      spdy_util_.ConstructSpdyRstStream(1, RST_STREAM_CANCEL));
+      spdy_util_.ConstructSpdyRstStream(1, ERROR_CODE_CANCEL));
   MockRead reads[] = {
       CreateMockRead(resp, 1, ASYNC), MockRead(ASYNC, ERR_IO_PENDING, 2),
       CreateMockRead(rst, 3, ASYNC), MockRead(ASYNC, 0, 4)  // EOF
@@ -1226,7 +1234,7 @@ TEST_F(SpdyProxyClientSocketTest, RstWithReadAndWritePending) {
 TEST_F(SpdyProxyClientSocketTest, NetLog) {
   SpdySerializedFrame conn(ConstructConnectRequestFrame());
   SpdySerializedFrame rst(
-      spdy_util_.ConstructSpdyRstStream(1, RST_STREAM_CANCEL));
+      spdy_util_.ConstructSpdyRstStream(1, ERROR_CODE_CANCEL));
   MockWrite writes[] = {
       CreateMockWrite(conn, 0, SYNCHRONOUS), CreateMockWrite(rst, 5),
   };
@@ -1246,7 +1254,7 @@ TEST_F(SpdyProxyClientSocketTest, NetLog) {
   ResumeAndRun();
   AssertSyncReadEquals(kMsg1, kLen1);
 
-  NetLog::Source sock_source = sock_->NetLog().source();
+  NetLogSource sock_source = sock_->NetLog().source();
   sock_.reset();
 
   TestNetLogEntry::List entry_list;
@@ -1319,7 +1327,7 @@ TEST_F(SpdyProxyClientSocketTest, RstWithReadAndWritePendingDelete) {
 
   SpdySerializedFrame resp(ConstructConnectReplyFrame());
   SpdySerializedFrame rst(
-      spdy_util_.ConstructSpdyRstStream(1, RST_STREAM_CANCEL));
+      spdy_util_.ConstructSpdyRstStream(1, ERROR_CODE_CANCEL));
   MockRead reads[] = {
       CreateMockRead(resp, 1, ASYNC), MockRead(ASYNC, ERR_IO_PENDING, 2),
       CreateMockRead(rst, 3, ASYNC), MockRead(SYNCHRONOUS, ERR_IO_PENDING, 4),

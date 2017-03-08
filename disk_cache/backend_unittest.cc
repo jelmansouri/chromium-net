@@ -6,6 +6,7 @@
 
 #include "base/files/file.h"
 #include "base/files/file_util.h"
+#include "base/memory/ptr_util.h"
 #include "base/metrics/field_trial.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
@@ -17,6 +18,7 @@
 #include "base/threading/platform_thread.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/threading/thread_task_runner_handle.h"
+#include "base/trace_event/memory_usage_estimator.h"
 #include "net/base/cache_type.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
@@ -125,6 +127,7 @@ class DiskCacheBackendTest : public DiskCacheTestWithCache {
   void BackendDoomRecent();
   void BackendDoomBetween();
   void BackendCalculateSizeOfAllEntries();
+  void BackendCalculateSizeOfEntriesBetween();
   void BackendTransaction(const std::string& name, int num_entries, bool load);
   void BackendRecoverInsert();
   void BackendRecoverRemove();
@@ -321,6 +324,9 @@ void DiskCacheBackendTest::BackendBasics() {
   ASSERT_TRUE(NULL != entry1);
   entry1->Close();
   entry1 = NULL;
+  // base::trace_event::EstimateMemoryUsage(cache_) is added to make sure
+  // tracking memory doesn't introduce crashes.
+  EXPECT_LT(0u, base::trace_event::EstimateMemoryUsage(cache_));
 
   ASSERT_THAT(OpenEntry("the first key", &entry1), IsOk());
   ASSERT_TRUE(NULL != entry1);
@@ -334,18 +340,20 @@ void DiskCacheBackendTest::BackendBasics() {
   ASSERT_TRUE(NULL != entry1);
   ASSERT_TRUE(NULL != entry2);
   EXPECT_EQ(2, cache_->GetEntryCount());
+  EXPECT_LT(0u, base::trace_event::EstimateMemoryUsage(cache_));
 
   disk_cache::Entry* entry3 = NULL;
   ASSERT_THAT(OpenEntry("some other key", &entry3), IsOk());
   ASSERT_TRUE(NULL != entry3);
   EXPECT_TRUE(entry2 == entry3);
-  EXPECT_EQ(2, cache_->GetEntryCount());
+  EXPECT_LT(0u, base::trace_event::EstimateMemoryUsage(cache_));
 
   EXPECT_THAT(DoomEntry("some other key"), IsOk());
   EXPECT_EQ(1, cache_->GetEntryCount());
   entry1->Close();
   entry2->Close();
   entry3->Close();
+  EXPECT_LT(0u, base::trace_event::EstimateMemoryUsage(cache_));
 
   EXPECT_THAT(DoomEntry("the first key"), IsOk());
   EXPECT_EQ(0, cache_->GetEntryCount());
@@ -357,6 +365,7 @@ void DiskCacheBackendTest::BackendBasics() {
   EXPECT_THAT(DoomEntry("some other key"), IsOk());
   EXPECT_EQ(0, cache_->GetEntryCount());
   entry2->Close();
+  EXPECT_LT(0u, base::trace_event::EstimateMemoryUsage(cache_));
 }
 
 TEST_F(DiskCacheBackendTest, Basics) {
@@ -1871,6 +1880,70 @@ TEST_F(DiskCacheBackendTest, SimpleCacheCalculateSizeOfAllEntries) {
   BackendCalculateSizeOfAllEntries();
 }
 
+void DiskCacheBackendTest::BackendCalculateSizeOfEntriesBetween() {
+  InitCache();
+
+  EXPECT_EQ(0, CalculateSizeOfEntriesBetween(base::Time(), base::Time::Max()));
+
+  Time start = Time::Now();
+
+  disk_cache::Entry* entry;
+  ASSERT_THAT(CreateEntry("first", &entry), IsOk());
+  entry->Close();
+  FlushQueueForTest();
+
+  AddDelay();
+  Time middle = Time::Now();
+  AddDelay();
+
+  ASSERT_THAT(CreateEntry("second", &entry), IsOk());
+  entry->Close();
+  ASSERT_THAT(CreateEntry("third_entry", &entry), IsOk());
+  entry->Close();
+  FlushQueueForTest();
+
+  AddDelay();
+  Time end = Time::Now();
+
+  int size_1 = GetEntryMetadataSize("first");
+  int size_2 = GetEntryMetadataSize("second");
+  int size_3 = GetEntryMetadataSize("third_entry");
+
+  ASSERT_EQ(3, cache_->GetEntryCount());
+  ASSERT_EQ(CalculateSizeOfAllEntries(),
+            CalculateSizeOfEntriesBetween(base::Time(), base::Time::Max()));
+
+  int start_end = CalculateSizeOfEntriesBetween(start, end);
+  ASSERT_EQ(CalculateSizeOfAllEntries(), start_end);
+  ASSERT_EQ(size_1 + size_2 + size_3, start_end);
+
+  ASSERT_EQ(size_1, CalculateSizeOfEntriesBetween(start, middle));
+  ASSERT_EQ(size_2 + size_3, CalculateSizeOfEntriesBetween(middle, end));
+
+  // After dooming the entries, the size should be back to zero.
+  ASSERT_THAT(DoomAllEntries(), IsOk());
+  EXPECT_EQ(0, CalculateSizeOfEntriesBetween(base::Time(), base::Time::Max()));
+}
+
+TEST_F(DiskCacheBackendTest, CalculateSizeOfEntriesBetween) {
+  InitCache();
+  ASSERT_EQ(net::ERR_NOT_IMPLEMENTED,
+            CalculateSizeOfEntriesBetween(base::Time(), base::Time::Max()));
+}
+
+TEST_F(DiskCacheBackendTest, MemoryOnlyCalculateSizeOfEntriesBetween) {
+  SetMemoryOnlyMode();
+  BackendCalculateSizeOfEntriesBetween();
+}
+
+TEST_F(DiskCacheBackendTest, SimpleCacheCalculateSizeOfEntriesBetween) {
+  // Use net::APP_CACHE to make size estimations deterministic via
+  // non-optimistic writes.
+  SetCacheType(net::APP_CACHE);
+  SetSimpleCacheMode();
+  BackendCalculateSizeOfEntriesBetween();
+}
+
 void DiskCacheBackendTest::BackendTransaction(const std::string& name,
                                               int num_entries, bool load) {
   success_ = false;
@@ -2057,7 +2130,8 @@ TEST_F(DiskCacheTest, SimpleCacheControlJoin) {
 
   // Instantiate the SimpleCacheTrial, forcing this run into the
   // ExperimentControl group.
-  base::FieldTrialList field_trial_list(new base::MockEntropyProvider());
+  base::FieldTrialList field_trial_list(
+      base::MakeUnique<base::MockEntropyProvider>());
   base::FieldTrialList::CreateFieldTrial("SimpleCacheTrial",
                                          "ExperimentControl");
   net::TestCompletionCallback cb;
@@ -2081,7 +2155,8 @@ TEST_F(DiskCacheTest, SimpleCacheControlJoin) {
 TEST_F(DiskCacheTest, SimpleCacheControlRestart) {
   // Instantiate the SimpleCacheTrial, forcing this run into the
   // ExperimentControl group.
-  base::FieldTrialList field_trial_list(new base::MockEntropyProvider());
+  base::FieldTrialList field_trial_list(
+      base::MakeUnique<base::MockEntropyProvider>());
   base::FieldTrialList::CreateFieldTrial("SimpleCacheTrial",
                                          "ExperimentControl");
 
@@ -2121,7 +2196,8 @@ TEST_F(DiskCacheTest, SimpleCacheControlLeave) {
   {
     // Instantiate the SimpleCacheTrial, forcing this run into the
     // ExperimentControl group.
-    base::FieldTrialList field_trial_list(new base::MockEntropyProvider());
+    base::FieldTrialList field_trial_list(
+        base::MakeUnique<base::MockEntropyProvider>());
     base::FieldTrialList::CreateFieldTrial("SimpleCacheTrial",
                                            "ExperimentControl");
 
@@ -2132,7 +2208,8 @@ TEST_F(DiskCacheTest, SimpleCacheControlLeave) {
 
   // Instantiate the SimpleCacheTrial, forcing this run into the
   // ExperimentNo group.
-  base::FieldTrialList field_trial_list(new base::MockEntropyProvider());
+  base::FieldTrialList field_trial_list(
+      base::MakeUnique<base::MockEntropyProvider>());
   base::FieldTrialList::CreateFieldTrial("SimpleCacheTrial", "ExperimentNo");
   net::TestCompletionCallback cb;
 

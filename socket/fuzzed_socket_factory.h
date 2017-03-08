@@ -39,13 +39,13 @@ class FuzzedSocketFactory : public ClientSocketFactory {
       DatagramSocket::BindType bind_type,
       const RandIntCallback& rand_int_cb,
       NetLog* net_log,
-      const NetLog::Source& source) override;
+      const NetLogSource& source) override;
 
   std::unique_ptr<StreamSocket> CreateTransportClientSocket(
       const AddressList& addresses,
       std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
       NetLog* net_log,
-      const NetLog::Source& source) override;
+      const NetLogSource& source) override;
 
   std::unique_ptr<SSLClientSocket> CreateSSLClientSocket(
       std::unique_ptr<ClientSocketHandle> transport_socket,
@@ -55,8 +55,13 @@ class FuzzedSocketFactory : public ClientSocketFactory {
 
   void ClearSSLSessionCache() override;
 
+  // Sets whether Connect()ions on returned sockets can be asynchronously
+  // delayed or outright fail. Defaults to true.
+  void set_fuzz_connect_result(bool v) { fuzz_connect_result_ = v; }
+
  private:
   base::FuzzedDataProvider* data_provider_;
+  bool fuzz_connect_result_;
 
   DISALLOW_COPY_AND_ASSIGN(FuzzedSocketFactory);
 };

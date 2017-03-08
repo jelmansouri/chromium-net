@@ -35,6 +35,7 @@
 #include "net/base/net_errors.h"
 #include "net/http/http_response_headers.h"
 #include "net/log/net_log.h"
+#include "net/log/net_log_entry.h"
 #include "net/url_request/url_fetcher.h"
 #include "net/url_request/url_fetcher_delegate.h"
 #include "net/url_request/url_request_context.h"
@@ -83,7 +84,8 @@ class QuitDelegate : public net::URLFetcherDelegate {
 
   void OnURLFetchDownloadProgress(const net::URLFetcher* source,
                                   int64_t current,
-                                  int64_t total) override {
+                                  int64_t total,
+                                  int64_t current_network_bytes) override {
     NOTREACHED();
   }
 
@@ -109,7 +111,7 @@ class PrintingLogObserver : public net::NetLog::ThreadSafeObserver {
   }
 
   // NetLog::ThreadSafeObserver implementation:
-  void OnAddEntry(const net::NetLog::Entry& entry) override {
+  void OnAddEntry(const net::NetLogEntry& entry) override {
     // The log level of the entry is unknown, so just assume it maps
     // to VLOG(1).
     if (!VLOG_IS_ON(1))

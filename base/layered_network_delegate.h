@@ -11,6 +11,7 @@
 
 #include "base/strings/string16.h"
 #include "net/base/completion_callback.h"
+#include "net/base/net_export.h"
 #include "net/base/network_delegate.h"
 #include "net/cookies/canonical_cookie.h"
 #include "net/proxy/proxy_retry_info.h"
@@ -29,7 +30,7 @@ class HttpResponseHeaders;
 class ProxyInfo;
 class URLRequest;
 
-// WrappingNetworkDelegate takes a |network_delegate| and extends it. When
+// LayeredNetworkDelegate takes a |network_delegate| and extends it. When
 // On*() is called, the On*Internal() method of this is first called and then
 // the On*() of |network_delegate| is called. On*Internal() methods have no
 // return values, and cannot prevent calling into the nested network delegate.
@@ -81,7 +82,6 @@ class NET_EXPORT LayeredNetworkDelegate : public NetworkDelegate {
   bool OnCanEnablePrivacyMode(const GURL& url,
                               const GURL& first_party_for_cookies) const final;
   bool OnAreExperimentalCookieFeaturesEnabled() const final;
-  bool OnAreStrictSecureCookiesEnabled() const final;
   bool OnCancelURLRequestWithPolicyViolatingReferrerHeader(
       const URLRequest& request,
       const GURL& target_url,
@@ -151,7 +151,6 @@ class NET_EXPORT LayeredNetworkDelegate : public NetworkDelegate {
       const GURL& first_party_for_cookies) const;
 
   virtual void OnAreExperimentalCookieFeaturesEnabledInternal() const;
-  virtual void OnAreStrictSecureCookiesEnabledInternal() const;
 
   virtual void OnCancelURLRequestWithPolicyViolatingReferrerHeaderInternal(
       const URLRequest& request,

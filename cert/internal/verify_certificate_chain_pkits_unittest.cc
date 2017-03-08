@@ -8,6 +8,7 @@
 #include "net/cert/internal/signature_policy.h"
 #include "net/cert/internal/trust_store.h"
 #include "net/der/input.h"
+#include "third_party/boringssl/src/include/openssl/pool.h"
 
 // Disable tests that require DSA signatures (DSA signatures are intentionally
 // unsupported). Custom versions of the DSA tests are defined below which expect
@@ -58,8 +59,11 @@ class VerifyCertificateChainPkitsTestDelegate {
     std::vector<scoped_refptr<net::ParsedCertificate>> input_chain;
     CertErrors errors;
     for (auto i = cert_ders.rbegin(); i != cert_ders.rend(); ++i) {
-      if (!net::ParsedCertificate::CreateAndAddToVector(*i, {}, &input_chain,
-                                                        &errors)) {
+      if (!net::ParsedCertificate::CreateAndAddToVector(
+              bssl::UniquePtr<CRYPTO_BUFFER>(
+                  CRYPTO_BUFFER_new(reinterpret_cast<const uint8_t*>(i->data()),
+                                    i->size(), nullptr)),
+              {}, &input_chain, &errors)) {
         ADD_FAILURE() << "Cert failed to parse:\n" << errors.ToDebugString();
         return false;
       }
@@ -74,9 +78,14 @@ class VerifyCertificateChainPkitsTestDelegate {
     // Run all tests at the time the PKITS was published.
     der::GeneralizedTime time = {2011, 4, 15, 0, 0, 0};
 
+    bool result = VerifyCertificateChain(input_chain, trust_anchor.get(),
+                                         &signature_policy, time, &errors);
+
     //  TODO(crbug.com/634443): Test errors on failure?
-    return VerifyCertificateChain(input_chain, trust_anchor.get(),
-                                  &signature_policy, time, &errors);
+    if (!result)
+      EXPECT_FALSE(errors.empty());
+
+    return result;
   }
 };
 

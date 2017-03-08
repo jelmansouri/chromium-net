@@ -27,10 +27,10 @@ class Value;
 namespace net {
 
 class AddressList;
-class BoundNetLog;
 class HostResolverImpl;
 class HostResolverProc;
 class NetLog;
+class NetLogWithSource;
 
 // This class represents the task of resolving hostnames (or IP address
 // literal) to an AddressList object.
@@ -182,7 +182,7 @@ class NET_EXPORT HostResolver {
                       AddressList* addresses,
                       const CompletionCallback& callback,
                       std::unique_ptr<Request>* out_req,
-                      const BoundNetLog& net_log) = 0;
+                      const NetLogWithSource& net_log) = 0;
 
   // Resolves the given hostname (or IP address literal) out of cache or HOSTS
   // file (if enabled) only. This is guaranteed to complete synchronously.
@@ -190,7 +190,7 @@ class NET_EXPORT HostResolver {
   // or HOSTS entry exists. Otherwise, ERR_DNS_CACHE_MISS is returned.
   virtual int ResolveFromCache(const RequestInfo& info,
                                AddressList* addresses,
-                               const BoundNetLog& net_log) = 0;
+                               const NetLogWithSource& net_log) = 0;
 
   // Enable or disable the built-in asynchronous DnsClient.
   virtual void SetDnsClientEnabled(bool enabled);
@@ -212,6 +212,14 @@ class NET_EXPORT HostResolver {
   virtual void InitializePersistence(
       const PersistCallback& persist_callback,
       std::unique_ptr<const base::Value> old_data);
+
+  // Sets the default AddressFamily to use when requests have left it
+  // unspecified. For example, this could be used to restrict resolution
+  // results to AF_INET by passing in ADDRESS_FAMILY_IPV4, or to
+  // AF_INET6 by passing in ADDRESS_FAMILY_IPV6. See http://crbug.com/696569 for
+  // why this option is necessary.
+  virtual void SetDefaultAddressFamily(AddressFamily address_family);
+  virtual AddressFamily GetDefaultAddressFamily() const;
 
   // Creates a HostResolver implementation that queries the underlying system.
   // (Except if a unit-test has changed the global HostResolverProc using

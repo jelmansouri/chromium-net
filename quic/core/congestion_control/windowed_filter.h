@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
-#ifndef NET_QUIC_CONGESTION_CONTROL_WINDOWED_FILTER_H_
-#define NET_QUIC_CONGESTION_CONTROL_WINDOWED_FILTER_H_
+#ifndef NET_QUIC_CORE_CONGESTION_CONTROL_WINDOWED_FILTER_H_
+#define NET_QUIC_CORE_CONGESTION_CONTROL_WINDOWED_FILTER_H_
 
 // Implements Kathleen Nichols' algorithm for tracking the minimum (or maximum)
 // estimate of a stream of samples over some fixed time interval. (E.g.,
@@ -31,7 +31,6 @@
 // turn is replaced by the third best. The newest sample replaces the third
 // best.
 
-#include "base/logging.h"
 #include "net/quic/core/quic_time.h"
 
 namespace net {
@@ -91,7 +90,14 @@ class WindowedFilter {
     if (Compare()(new_sample, estimates_[1].sample)) {
       estimates_[1] = Sample(new_sample, new_time);
       estimates_[2] = estimates_[1];
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstrict-overflow"
+#endif
     } else if (Compare()(new_sample, estimates_[2].sample)) {
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
       estimates_[2] = Sample(new_sample, new_time);
     }
 
@@ -153,4 +159,4 @@ class WindowedFilter {
 
 }  // namespace net
 
-#endif  // NET_QUIC_CONGESTION_CONTROL_WINDOWED_FILTER_H_
+#endif  // NET_QUIC_CORE_CONGESTION_CONTROL_WINDOWED_FILTER_H_

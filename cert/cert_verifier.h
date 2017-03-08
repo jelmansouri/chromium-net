@@ -18,9 +18,9 @@
 
 namespace net {
 
-class BoundNetLog;
 class CertVerifyResult;
 class CRLSet;
+class NetLogWithSource;
 
 // CertVerifier represents a service for verifying certificates.
 //
@@ -79,6 +79,11 @@ class NET_EXPORT CertVerifier {
     // If set, certificates with SHA-1 signatures will be allowed, but only if
     // they are issued by non-public trust anchors.
     VERIFY_ENABLE_SHA1_LOCAL_ANCHORS = 1 << 5,
+
+    // If set, certificates which lack a subjectAltName will be allowed to
+    // match against the commonName of the certificate, but only if they are
+    // issued by non-public trust anchors.
+    VERIFY_ENABLE_COMMON_NAME_FALLBACK_LOCAL_ANCHORS = 1 << 6,
   };
 
   // Parameters to verify |certificate| against the supplied
@@ -167,7 +172,7 @@ class NET_EXPORT CertVerifier {
                      CertVerifyResult* verify_result,
                      const CompletionCallback& callback,
                      std::unique_ptr<Request>* out_req,
-                     const BoundNetLog& net_log) = 0;
+                     const NetLogWithSource& net_log) = 0;
 
   // Returns true if this CertVerifier supports stapled OCSP responses.
   virtual bool SupportsOCSPStapling();

@@ -19,7 +19,6 @@ class HttpRequestHeaders;
 class HttpResponseHeaders;
 class ProxyInfo;
 class ProxyService;
-class URLRequest;
 
 class TestProxyDelegate : public ProxyDelegate {
  public:
@@ -71,6 +70,7 @@ class TestProxyDelegate : public ProxyDelegate {
       ProxyServer* alternative_proxy_server) const override;
   void OnAlternativeProxyBroken(
       const ProxyServer& alternative_proxy_server) override;
+  ProxyServer GetDefaultAlternativeProxy() const override;
 
   void set_alternative_proxy_server(
       const ProxyServer& alternative_proxy_server) {

@@ -5,6 +5,9 @@
 import("//build/config/features.gni")
 
 declare_args() {
+  # If true, prune things down as needed for proto-quic build.
+  is_proto_quic = false
+
   # Disables support for file URLs.  File URL support requires use of icu.
   disable_file_support = false
 
@@ -20,4 +23,7 @@ declare_args() {
 
   # Do not disable brotli filter by default.
   disable_brotli_filter = false
+
+  # Multicast DNS.
+  enable_mdns = is_win || is_linux
 }

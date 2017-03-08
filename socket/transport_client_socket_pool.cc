@@ -8,7 +8,6 @@
 #include <utility>
 
 #include "base/compiler_specific.h"
-#include "base/lazy_instance.h"
 #include "base/logging.h"
 #include "base/message_loop/message_loop.h"
 #include "base/metrics/histogram_macros.h"
@@ -20,9 +19,11 @@
 #include "base/values.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
+#include "net/base/trace_constants.h"
 #include "net/log/net_log.h"
 #include "net/log/net_log_event_type.h"
 #include "net/log/net_log_source_type.h"
+#include "net/log/net_log_with_source.h"
 #include "net/socket/client_socket_factory.h"
 #include "net/socket/client_socket_handle.h"
 #include "net/socket/client_socket_pool_base.h"
@@ -49,14 +50,6 @@ bool AddressListOnlyContainsIPv6(const AddressList& list) {
 }
 
 }  // namespace
-
-// This lock protects |g_last_connect_time|.
-static base::LazyInstance<base::Lock>::Leaky
-    g_last_connect_time_lock = LAZY_INSTANCE_INITIALIZER;
-
-// |g_last_connect_time| has the last time a connect() call is made.
-static base::LazyInstance<base::TimeTicks>::Leaky
-    g_last_connect_time = LAZY_INSTANCE_INITIALIZER;
 
 TransportSocketParams::TransportSocketParams(
     const HostPortPair& host_port_pair,
@@ -103,18 +96,19 @@ TransportConnectJob::TransportConnectJob(
     HostResolver* host_resolver,
     Delegate* delegate,
     NetLog* net_log)
-    : ConnectJob(group_name,
-                 timeout_duration,
-                 priority,
-                 respect_limits,
-                 delegate,
-                 BoundNetLog::Make(net_log, NetLogSourceType::CONNECT_JOB)),
+    : ConnectJob(
+          group_name,
+          timeout_duration,
+          priority,
+          respect_limits,
+          delegate,
+          NetLogWithSource::Make(net_log,
+                                 NetLogSourceType::TRANSPORT_CONNECT_JOB)),
       params_(params),
       resolver_(host_resolver),
       client_socket_factory_(client_socket_factory),
       next_state_(STATE_NONE),
       socket_performance_watcher_factory_(socket_performance_watcher_factory),
-      interval_between_connects_(CONNECT_INTERVAL_GT_20MS),
       resolve_result_(OK) {}
 
 TransportConnectJob::~TransportConnectJob() {
@@ -163,7 +157,7 @@ void TransportConnectJob::MakeAddressListStartWithIPv4(AddressList* list) {
 }
 
 // static
-base::TimeDelta TransportConnectJob::HistogramDuration(
+void TransportConnectJob::HistogramDuration(
     const LoadTimingInfo::ConnectTiming& connect_timing,
     RaceResult race_result) {
   DCHECK(!connect_timing.connect_start.is_null());
@@ -220,8 +214,6 @@ base::TimeDelta TransportConnectJob::HistogramDuration(
       NOTREACHED();
       break;
   }
-
-  return connect_duration;
 }
 
 void TransportConnectJob::OnIOComplete(int result) {
@@ -277,7 +269,8 @@ int TransportConnectJob::DoResolveHost() {
 }
 
 int TransportConnectJob::DoResolveHostComplete(int result) {
-  TRACE_EVENT0("net", "TransportConnectJob::DoResolveHostComplete");
+  TRACE_EVENT0(kNetTracingCategory,
+               "TransportConnectJob::DoResolveHostComplete");
   connect_timing_.dns_end = base::TimeTicks::Now();
   // Overwrite connection start time, since for connections that do not go
   // through proxies, |connect_start| should not include dns lookup time.
@@ -299,25 +292,6 @@ int TransportConnectJob::DoResolveHostComplete(int result) {
 }
 
 int TransportConnectJob::DoTransportConnect() {
-  base::TimeTicks now = base::TimeTicks::Now();
-  base::TimeTicks last_connect_time;
-  {
-    base::AutoLock lock(g_last_connect_time_lock.Get());
-    last_connect_time = g_last_connect_time.Get();
-    *g_last_connect_time.Pointer() = now;
-  }
-  if (last_connect_time.is_null()) {
-    interval_between_connects_ = CONNECT_INTERVAL_GT_20MS;
-  } else {
-    int64_t interval = (now - last_connect_time).InMilliseconds();
-    if (interval <= 10)
-      interval_between_connects_ = CONNECT_INTERVAL_LE_10MS;
-    else if (interval <= 20)
-      interval_between_connects_ = CONNECT_INTERVAL_LE_20MS;
-    else
-      interval_between_connects_ = CONNECT_INTERVAL_GT_20MS;
-  }
-
   next_state_ = STATE_TRANSPORT_CONNECT_COMPLETE;
   // Create a |SocketPerformanceWatcher|, and pass the ownership.
   std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher;
@@ -376,37 +350,7 @@ int TransportConnectJob::DoTransportConnectComplete(int result) {
       race_result = RACE_IPV6_SOLO;
     else
       race_result = RACE_IPV6_WINS;
-    base::TimeDelta connect_duration =
-        HistogramDuration(connect_timing_, race_result);
-    switch (interval_between_connects_) {
-      case CONNECT_INTERVAL_LE_10MS:
-        UMA_HISTOGRAM_CUSTOM_TIMES(
-            "Net.TCP_Connection_Latency_Interval_LessThanOrEqual_10ms",
-            connect_duration,
-            base::TimeDelta::FromMilliseconds(1),
-            base::TimeDelta::FromMinutes(10),
-            100);
-        break;
-      case CONNECT_INTERVAL_LE_20MS:
-        UMA_HISTOGRAM_CUSTOM_TIMES(
-            "Net.TCP_Connection_Latency_Interval_LessThanOrEqual_20ms",
-            connect_duration,
-            base::TimeDelta::FromMilliseconds(1),
-            base::TimeDelta::FromMinutes(10),
-            100);
-        break;
-      case CONNECT_INTERVAL_GT_20MS:
-        UMA_HISTOGRAM_CUSTOM_TIMES(
-            "Net.TCP_Connection_Latency_Interval_GreaterThan_20ms",
-            connect_duration,
-            base::TimeDelta::FromMilliseconds(1),
-            base::TimeDelta::FromMinutes(10),
-            100);
-        break;
-      default:
-        NOTREACHED();
-        break;
-    }
+    HistogramDuration(connect_timing_, race_result);
 
     SetSocket(std::move(transport_socket_));
   } else {
@@ -558,7 +502,7 @@ int TransportClientSocketPool::RequestSocket(const std::string& group_name,
                                              RespectLimits respect_limits,
                                              ClientSocketHandle* handle,
                                              const CompletionCallback& callback,
-                                             const BoundNetLog& net_log) {
+                                             const NetLogWithSource& net_log) {
   const scoped_refptr<TransportSocketParams>* casted_params =
       static_cast<const scoped_refptr<TransportSocketParams>*>(params);
 
@@ -569,7 +513,7 @@ int TransportClientSocketPool::RequestSocket(const std::string& group_name,
 }
 
 void TransportClientSocketPool::NetLogTcpClientSocketPoolRequestedSocket(
-    const BoundNetLog& net_log,
+    const NetLogWithSource& net_log,
     const scoped_refptr<TransportSocketParams>* casted_params) {
   if (net_log.IsCapturing()) {
     // TODO(eroman): Split out the host and port parameters.
@@ -584,7 +528,7 @@ void TransportClientSocketPool::RequestSockets(
     const std::string& group_name,
     const void* params,
     int num_sockets,
-    const BoundNetLog& net_log) {
+    const NetLogWithSource& net_log) {
   const scoped_refptr<TransportSocketParams>* casted_params =
       static_cast<const scoped_refptr<TransportSocketParams>*>(params);
 
@@ -597,6 +541,12 @@ void TransportClientSocketPool::RequestSockets(
   }
 
   base_.RequestSockets(group_name, *casted_params, num_sockets, net_log);
+}
+
+void TransportClientSocketPool::SetPriority(const std::string& group_name,
+                                            ClientSocketHandle* handle,
+                                            RequestPriority priority) {
+  base_.SetPriority(group_name, handle, priority);
 }
 
 void TransportClientSocketPool::CancelRequest(
@@ -618,6 +568,11 @@ void TransportClientSocketPool::FlushWithError(int error) {
 
 void TransportClientSocketPool::CloseIdleSockets() {
   base_.CloseIdleSockets();
+}
+
+void TransportClientSocketPool::CloseIdleSocketsInGroup(
+    const std::string& group_name) {
+  base_.CloseIdleSocketsInGroup(group_name);
 }
 
 int TransportClientSocketPool::IdleSocketCount() const {

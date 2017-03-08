@@ -20,7 +20,6 @@ class HostPortPair;
 class ProxyInfo;
 class ProxyServer;
 class ProxyService;
-class URLRequest;
 
 // Delegate for setting up a connection.
 class NET_EXPORT ProxyDelegate {
@@ -82,6 +81,10 @@ class NET_EXPORT ProxyDelegate {
   // Notifies the ProxyDelegate that |alternative_proxy_server| is broken.
   virtual void OnAlternativeProxyBroken(
       const ProxyServer& alternative_proxy_server) = 0;
+
+  // Returns the default alternative proxy server. May return an invalid proxy
+  // server if no valid proxy server is available.
+  virtual ProxyServer GetDefaultAlternativeProxy() const = 0;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(ProxyDelegate);

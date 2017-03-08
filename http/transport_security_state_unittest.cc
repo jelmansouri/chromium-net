@@ -11,6 +11,7 @@
 #include "base/base64.h"
 #include "base/files/file_path.h"
 #include "base/json/json_reader.h"
+#include "base/memory/ptr_util.h"
 #include "base/metrics/field_trial.h"
 #include "base/rand_util.h"
 #include "base/sha1.h"
@@ -31,7 +32,6 @@
 #include "net/cert/x509_cert_types.h"
 #include "net/cert/x509_certificate.h"
 #include "net/http/http_util.h"
-#include "net/log/net_log.h"
 #include "net/ssl/ssl_info.h"
 #include "net/test/cert_test_util.h"
 #include "net/test/test_data_directory.h"
@@ -89,25 +89,31 @@ class MockCertificateReportSender
   MockCertificateReportSender() {}
   ~MockCertificateReportSender() override {}
 
-  void Send(const GURL& report_uri, const std::string& report) override {
+  void Send(
+      const GURL& report_uri,
+      base::StringPiece content_type,
+      base::StringPiece report,
+      const base::Callback<void()>& success_callback,
+      const base::Callback<void(const GURL&, int)>& error_callback) override {
     latest_report_uri_ = report_uri;
-    latest_report_ = report;
+    report.CopyToString(&latest_report_);
+    content_type.CopyToString(&latest_content_type_);
   }
-
-  void SetErrorCallback(
-      const base::Callback<void(const GURL&, int)>& error_callback) override {}
 
   void Clear() {
     latest_report_uri_ = GURL();
     latest_report_ = std::string();
+    latest_content_type_ = std::string();
   }
 
   const GURL& latest_report_uri() { return latest_report_uri_; }
   const std::string& latest_report() { return latest_report_; }
+  const std::string& latest_content_type() { return latest_content_type_; }
 
  private:
   GURL latest_report_uri_;
   std::string latest_report_;
+  std::string latest_content_type_;
 };
 
 // A mock ReportSenderInterface that simulates a net error on every report sent.
@@ -120,19 +126,18 @@ class MockFailingCertificateReportSender
   int net_error() { return net_error_; }
 
   // TransportSecurityState::ReportSenderInterface:
-  void Send(const GURL& report_uri, const std::string& report) override {
-    ASSERT_FALSE(error_callback_.is_null());
-    error_callback_.Run(report_uri, net_error_);
-  }
-
-  void SetErrorCallback(
+  void Send(
+      const GURL& report_uri,
+      base::StringPiece content_type,
+      base::StringPiece report,
+      const base::Callback<void()>& success_callback,
       const base::Callback<void(const GURL&, int)>& error_callback) override {
-    error_callback_ = error_callback;
+    ASSERT_FALSE(error_callback.is_null());
+    error_callback.Run(report_uri, net_error_);
   }
 
  private:
   const int net_error_;
-  base::Callback<void(const GURL&, int)> error_callback_;
 };
 
 // A mock ExpectCTReporter that remembers the latest violation that was
@@ -194,7 +199,7 @@ void CheckHPKPReport(
     const HashValueVector& known_pins) {
   std::unique_ptr<base::Value> value(base::JSONReader::Read(report));
   ASSERT_TRUE(value);
-  ASSERT_TRUE(value->IsType(base::Value::TYPE_DICTIONARY));
+  ASSERT_TRUE(value->IsType(base::Value::Type::DICTIONARY));
 
   base::DictionaryValue* report_dict;
   ASSERT_TRUE(value->GetAsDictionary(&report_dict));
@@ -250,8 +255,7 @@ void CheckHPKPReport(
 // 5. The "cert-status" field matches |cert_status|, and is not present when
 //    |cert_status| is empty.
 // 6. The "validated-chain" and "serverd-chain" fields match those in
-//    |ssl_info|, and are only present when |ssl_info.is_issued_by_known_root|
-//    is true.
+//    |ssl_info|.
 void CheckSerializedExpectStapleReport(const std::string& report,
                                        const HostPortPair& host_port_pair,
                                        const SSLInfo& ssl_info,
@@ -260,7 +264,7 @@ void CheckSerializedExpectStapleReport(const std::string& report,
                                        const std::string& cert_status) {
   std::unique_ptr<base::Value> value(base::JSONReader::Read(report));
   ASSERT_TRUE(value);
-  ASSERT_TRUE(value->IsType(base::Value::TYPE_DICTIONARY));
+  ASSERT_TRUE(value->IsType(base::Value::Type::DICTIONARY));
 
   base::DictionaryValue* report_dict;
   ASSERT_TRUE(value->GetAsDictionary(&report_dict));
@@ -310,18 +314,13 @@ void CheckSerializedExpectStapleReport(const std::string& report,
   bool has_validated_chain = report_dict->GetList(
       "validated-certificate-chain", &report_validated_certificate_chain);
 
-  if (ssl_info.is_issued_by_known_root) {
-    EXPECT_TRUE(has_served_chain);
-    EXPECT_NO_FATAL_FAILURE(CompareCertificateChainWithList(
-        ssl_info.unverified_cert, report_served_certificate_chain));
+  EXPECT_TRUE(has_served_chain);
+  EXPECT_NO_FATAL_FAILURE(CompareCertificateChainWithList(
+      ssl_info.unverified_cert, report_served_certificate_chain));
 
-    EXPECT_TRUE(has_validated_chain);
-    EXPECT_NO_FATAL_FAILURE(CompareCertificateChainWithList(
-        ssl_info.cert, report_validated_certificate_chain));
-  } else {
-    EXPECT_FALSE(has_served_chain);
-    EXPECT_FALSE(has_validated_chain);
-  }
+  EXPECT_TRUE(has_validated_chain);
+  EXPECT_NO_FATAL_FAILURE(CompareCertificateChainWithList(
+      ssl_info.cert, report_validated_certificate_chain));
 }
 
 // Set up |state| for ExpectStaple, call CheckExpectStaple(), and verify the
@@ -337,7 +336,13 @@ void CheckExpectStapleReport(TransportSecurityState* state,
   HostPortPair host_port(kExpectStapleStaticHostname, 443);
   state->SetReportSender(reporter);
   state->CheckExpectStaple(host_port, ssl_info, ocsp_response);
+  if (!ssl_info.is_issued_by_known_root) {
+    EXPECT_EQ(GURL(), reporter->latest_report_uri());
+    EXPECT_EQ(std::string(), reporter->latest_report());
+    return;
+  }
   EXPECT_EQ(GURL(kExpectStapleStaticReportURI), reporter->latest_report_uri());
+  EXPECT_EQ("application/json; charset=utf-8", reporter->latest_content_type());
   std::string serialized_report = reporter->latest_report();
   EXPECT_NO_FATAL_FAILURE(CheckSerializedExpectStapleReport(
       serialized_report, host_port, ssl_info, ocsp_response, response_status,
@@ -479,29 +484,6 @@ TEST_F(TransportSecurityStateTest, MatchesCase1) {
   bool include_subdomains = false;
   state.AddHSTS("EXample.coM", expiry, include_subdomains);
   EXPECT_TRUE(state.ShouldUpgradeToSSL("example.com"));
-}
-
-TEST_F(TransportSecurityStateTest, Fuzz) {
-  TransportSecurityState state;
-  TransportSecurityState::STSState sts_state;
-  TransportSecurityState::PKPState pkp_state;
-
-  EnableStaticPins(&state);
-
-  for (size_t i = 0; i < 128; i++) {
-    std::string hostname;
-
-    for (;;) {
-      if (base::RandInt(0, 16) == 7) {
-        break;
-      }
-      if (i > 0 && base::RandInt(0, 7) == 7) {
-        hostname.append(1, '.');
-      }
-      hostname.append(1, 'a' + base::RandInt(0, 25));
-    }
-    state.GetStaticDomainState(hostname, &sts_state, &pkp_state);
-  }
 }
 
 TEST_F(TransportSecurityStateTest, MatchesCase2) {
@@ -1443,6 +1425,8 @@ TEST_F(TransportSecurityStateTest, HPKPReporting) {
   EXPECT_EQ(report_uri, mock_report_sender.latest_report_uri());
   std::string report = mock_report_sender.latest_report();
   ASSERT_FALSE(report.empty());
+  EXPECT_EQ("application/json; charset=utf-8",
+            mock_report_sender.latest_content_type());
   ASSERT_NO_FATAL_FAILURE(CheckHPKPReport(report, host_port_pair, true, kHost,
                                           cert1.get(), cert2.get(),
                                           good_hashes));
@@ -1458,6 +1442,8 @@ TEST_F(TransportSecurityStateTest, HPKPReporting) {
   EXPECT_EQ(report_uri, mock_report_sender.latest_report_uri());
   report = mock_report_sender.latest_report();
   ASSERT_FALSE(report.empty());
+  EXPECT_EQ("application/json; charset=utf-8",
+            mock_report_sender.latest_content_type());
   ASSERT_NO_FATAL_FAILURE(CheckHPKPReport(report, subdomain_host_port_pair,
                                           true, kHost, cert1.get(), cert2.get(),
                                           good_hashes));
@@ -1568,6 +1554,8 @@ TEST_F(TransportSecurityStateTest, HPKPReportOnly) {
   EXPECT_EQ(report_uri, mock_report_sender.latest_report_uri());
   std::string report = mock_report_sender.latest_report();
   ASSERT_FALSE(report.empty());
+  EXPECT_EQ("application/json; charset=utf-8",
+            mock_report_sender.latest_content_type());
   ASSERT_NO_FATAL_FAILURE(CheckHPKPReport(report, host_port_pair, true, kHost,
                                           cert1.get(), cert2.get(),
                                           ssl_info.public_key_hashes));
@@ -1694,6 +1682,8 @@ TEST_F(TransportSecurityStateTest, PreloadedPKPReportUri) {
 
   std::string report = mock_report_sender.latest_report();
   ASSERT_FALSE(report.empty());
+  EXPECT_EQ("application/json; charset=utf-8",
+            mock_report_sender.latest_content_type());
   ASSERT_NO_FATAL_FAILURE(CheckHPKPReport(
       report, host_port_pair, pkp_state.include_subdomains, pkp_state.domain,
       cert1.get(), cert2.get(), pkp_state.spki_hashes));
@@ -2050,14 +2040,14 @@ TEST_P(ExpectStapleErrorResponseTest, CheckResponseStatusSerialization) {
   ssl_info.unverified_cert = cert2;
   ssl_info.ocsp_result.response_status = test.response_status;
 
-  // Certificate chains should only be included when |is_issued_by_known_root|
-  // is true.
+  // Reports should only be sent when |is_issued_by_known_root| is true.
   ssl_info.is_issued_by_known_root = true;
   ASSERT_NO_FATAL_FAILURE(
       CheckExpectStapleReport(&state, &reporter, ssl_info, ocsp_response,
                               test.response_status_string, std::string()));
+  reporter.Clear();
 
-  // No certificate chains should be included in the report.
+  // No report should be sent.
   ssl_info.is_issued_by_known_root = false;
   ASSERT_NO_FATAL_FAILURE(
       CheckExpectStapleReport(&state, &reporter, ssl_info, ocsp_response,
@@ -2105,14 +2095,13 @@ TEST_P(ExpectStapleErrorCertStatusTest, CheckCertStatusSerialization) {
   ssl_info.ocsp_result.response_status = OCSPVerifyResult::PROVIDED;
   ssl_info.ocsp_result.revocation_status = test.revocation_status;
 
-  // Certificate chains should only be included when |is_issued_by_known_root|
-  // is true.
+  // Reports should only be sent when |is_issued_by_known_root| is true.
   ssl_info.is_issued_by_known_root = true;
   ASSERT_NO_FATAL_FAILURE(CheckExpectStapleReport(&state, &reporter, ssl_info,
                                                   ocsp_response, "PROVIDED",
                                                   test.cert_status_string));
+  reporter.Clear();
 
-  // No certificate chains should be included in the report.
   ssl_info.is_issued_by_known_root = false;
   ASSERT_NO_FATAL_FAILURE(CheckExpectStapleReport(&state, &reporter, ssl_info,
                                                   ocsp_response, "PROVIDED",
@@ -2315,7 +2304,8 @@ TEST_F(TransportSecurityStateTest, RequireCTForSymantec) {
   // necessary.
   hashes.clear();
   hashes.push_back(HashValue(symantec_hash_value));
-  base::FieldTrialList field_trial_list(new base::MockEntropyProvider());
+  base::FieldTrialList field_trial_list(
+      base::MakeUnique<base::MockEntropyProvider>());
   base::FieldTrialList::CreateFieldTrial("EnforceCTForProblematicRoots",
                                          "disabled");
 

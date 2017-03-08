@@ -9,6 +9,7 @@
 
 #include "base/strings/string16.h"
 #include "net/base/completion_callback.h"
+#include "net/base/net_export.h"
 #include "net/base/network_delegate.h"
 #include "net/cookies/canonical_cookie.h"
 #include "net/proxy/proxy_retry_info.h"
@@ -195,10 +196,6 @@ class NET_EXPORT NetworkDelegateImpl : public NetworkDelegate {
 
   // Returns true if the embedder has enabled experimental cookie features.
   bool OnAreExperimentalCookieFeaturesEnabled() const override;
-
-  // TODO(jww): Remove this once we ship strict secure cookies:
-  // https://crbug.com/546820
-  bool OnAreStrictSecureCookiesEnabled() const override;
 
   // Called when the |referrer_url| for requesting |target_url| during handling
   // of the |request| is does not comply with the referrer policy (e.g. a

@@ -16,6 +16,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "net/base/net_errors.h"
+#include "net/log/net_log_capture_mode.h"
 #include "net/log/net_log_event_type.h"
 #include "net/log/net_log_source_type.h"
 #include "net/proxy/dhcp_proxy_script_fetcher.h"
@@ -88,8 +89,8 @@ ProxyScriptDecider::ProxyScriptDecider(
       current_pac_source_index_(0u),
       pac_mandatory_(false),
       next_state_(STATE_NONE),
-      net_log_(
-          BoundNetLog::Make(net_log, NetLogSourceType::PROXY_SCRIPT_DECIDER)),
+      net_log_(NetLogWithSource::Make(net_log,
+                                      NetLogSourceType::PROXY_SCRIPT_DECIDER)),
       fetch_pac_bytes_(false),
       quick_check_enabled_(true),
       host_resolver_(nullptr) {

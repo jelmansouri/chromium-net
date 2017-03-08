@@ -5,6 +5,7 @@
 #include "net/spdy/spdy_proxy_client_socket.h"
 
 #include <algorithm>  // min
+#include <memory>
 #include <utility>
 
 #include "base/bind.h"
@@ -24,6 +25,7 @@
 #include "net/http/http_response_headers.h"
 #include "net/http/proxy_connect_redirect_http_stream.h"
 #include "net/log/net_log_event_type.h"
+#include "net/log/net_log_source.h"
 #include "net/log/net_log_source_type.h"
 #include "net/spdy/spdy_http_utils.h"
 #include "url/gurl.h"
@@ -35,7 +37,7 @@ SpdyProxyClientSocket::SpdyProxyClientSocket(
     const std::string& user_agent,
     const HostPortPair& endpoint,
     const HostPortPair& proxy_server,
-    const BoundNetLog& source_net_log,
+    const NetLogWithSource& source_net_log,
     HttpAuthController* auth_controller)
     : next_state_(STATE_DISCONNECTED),
       spdy_stream_(spdy_stream),
@@ -46,8 +48,8 @@ SpdyProxyClientSocket::SpdyProxyClientSocket(
       write_buffer_len_(0),
       was_ever_used_(false),
       redirect_has_load_timing_info_(false),
-      net_log_(BoundNetLog::Make(spdy_stream->net_log().net_log(),
-                                 NetLogSourceType::PROXY_CLIENT_SOCKET)),
+      net_log_(NetLogWithSource::Make(spdy_stream->net_log().net_log(),
+                                      NetLogSourceType::PROXY_CLIENT_SOCKET)),
       weak_factory_(this),
       write_callback_weak_factory_(this) {
   request_.method = "CONNECT";
@@ -150,7 +152,7 @@ bool SpdyProxyClientSocket::IsConnectedAndIdle() const {
       spdy_stream_->IsOpen();
 }
 
-const BoundNetLog& SpdyProxyClientSocket::NetLog() const {
+const NetLogWithSource& SpdyProxyClientSocket::NetLog() const {
   return net_log_;
 }
 
@@ -166,7 +168,7 @@ bool SpdyProxyClientSocket::WasEverUsed() const {
   return was_ever_used_ || (spdy_stream_.get() && spdy_stream_->WasEverUsed());
 }
 
-bool SpdyProxyClientSocket::WasNpnNegotiated() const {
+bool SpdyProxyClientSocket::WasAlpnNegotiated() const {
   return false;
 }
 
@@ -405,7 +407,7 @@ int SpdyProxyClientSocket::DoReadReplyComplete(int result) {
 
       redirect_has_load_timing_info_ =
           spdy_stream_->GetLoadTimingInfo(&redirect_load_timing_info_);
-      // Note that this triggers a RST_STREAM_CANCEL.
+      // Note that this triggers a ERROR_CODE_CANCEL.
       spdy_stream_->DetachDelegate();
       next_state_ = STATE_DISCONNECTED;
       return ERR_HTTPS_PROXY_TUNNEL_RESPONSE;
@@ -429,26 +431,26 @@ int SpdyProxyClientSocket::DoReadReplyComplete(int result) {
 // SpdyStream::Delegate methods:
 // Called when SYN frame has been sent.
 // Returns true if no more data to be sent after SYN frame.
-void SpdyProxyClientSocket::OnRequestHeadersSent() {
+void SpdyProxyClientSocket::OnHeadersSent() {
   DCHECK_EQ(next_state_, STATE_SEND_REQUEST_COMPLETE);
 
   OnIOComplete(OK);
 }
 
-SpdyResponseHeadersStatus SpdyProxyClientSocket::OnResponseHeadersUpdated(
+void SpdyProxyClientSocket::OnHeadersReceived(
     const SpdyHeaderBlock& response_headers) {
   // If we've already received the reply, existing headers are too late.
   // TODO(mbelshe): figure out a way to make HEADERS frames useful after the
   //                initial response.
   if (next_state_ != STATE_READ_REPLY_COMPLETE)
-    return RESPONSE_HEADERS_ARE_COMPLETE;
+    return;
 
   // Save the response
-  if (!SpdyHeadersToHttpResponse(response_headers, &response_))
-    return RESPONSE_HEADERS_ARE_INCOMPLETE;
+  const bool headers_valid =
+      SpdyHeadersToHttpResponse(response_headers, &response_);
+  DCHECK(headers_valid);
 
   OnIOComplete(OK);
-  return RESPONSE_HEADERS_ARE_COMPLETE;
 }
 
 // Called when data is received or on EOF (if |buffer| is NULL).

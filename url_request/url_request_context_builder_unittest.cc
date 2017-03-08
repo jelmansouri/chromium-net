@@ -7,12 +7,15 @@
 #include <memory>
 
 #include "base/memory/ptr_util.h"
+#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
+#include "base/test/scoped_task_scheduler.h"
 #include "build/build_config.h"
 #include "net/base/request_priority.h"
 #include "net/http/http_auth_challenge_tokenizer.h"
 #include "net/http/http_auth_handler.h"
 #include "net/http/http_auth_handler_factory.h"
+#include "net/log/net_log_with_source.h"
 #include "net/ssl/ssl_info.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/url_request/url_request.h"
@@ -41,7 +44,7 @@ class MockHttpAuthHandlerFactory : public HttpAuthHandlerFactory {
                         const GURL& origin,
                         CreateReason reason,
                         int nonce_count,
-                        const BoundNetLog& net_log,
+                        const NetLogWithSource& net_log,
                         std::unique_ptr<HttpAuthHandler>* handler) override {
     handler->reset();
 
@@ -57,7 +60,8 @@ class MockHttpAuthHandlerFactory : public HttpAuthHandlerFactory {
 
 class URLRequestContextBuilderTest : public PlatformTest {
  protected:
-  URLRequestContextBuilderTest() {
+  URLRequestContextBuilderTest()
+      : scoped_task_scheduler_(base::MessageLoop::current()) {
     test_server_.AddDefaultHandlers(
         base::FilePath(FILE_PATH_LITERAL("net/data/url_request_unittest")));
 #if defined(OS_LINUX) || defined(OS_ANDROID)
@@ -68,6 +72,9 @@ class URLRequestContextBuilderTest : public PlatformTest {
 
   EmbeddedTestServer test_server_;
   URLRequestContextBuilder builder_;
+
+ private:
+  base::test::ScopedTaskScheduler scoped_task_scheduler_;
 };
 
 TEST_F(URLRequestContextBuilderTest, DefaultSettings) {
@@ -109,7 +116,7 @@ TEST_F(URLRequestContextBuilderTest, DefaultHttpAuthHandlerFactory) {
   EXPECT_EQ(OK,
             context->http_auth_handler_factory()->CreateAuthHandlerFromString(
                 "basic", HttpAuth::AUTH_SERVER, null_ssl_info, gurl,
-                BoundNetLog(), &handler));
+                NetLogWithSource(), &handler));
 }
 
 TEST_F(URLRequestContextBuilderTest, CustomHttpAuthHandlerFactory) {
@@ -125,19 +132,19 @@ TEST_F(URLRequestContextBuilderTest, CustomHttpAuthHandlerFactory) {
   EXPECT_EQ(kBasicReturnCode,
             context->http_auth_handler_factory()->CreateAuthHandlerFromString(
                 "ExtraScheme", HttpAuth::AUTH_SERVER, null_ssl_info, gurl,
-                BoundNetLog(), &handler));
+                NetLogWithSource(), &handler));
 
   // Verify that the default basic handler isn't present
   EXPECT_EQ(ERR_UNSUPPORTED_AUTH_SCHEME,
             context->http_auth_handler_factory()->CreateAuthHandlerFromString(
                 "basic", HttpAuth::AUTH_SERVER, null_ssl_info, gurl,
-                BoundNetLog(), &handler));
+                NetLogWithSource(), &handler));
 
   // Verify that a handler isn't returned for a bogus scheme.
   EXPECT_EQ(ERR_UNSUPPORTED_AUTH_SCHEME,
             context->http_auth_handler_factory()->CreateAuthHandlerFromString(
                 "Bogus", HttpAuth::AUTH_SERVER, null_ssl_info, gurl,
-                BoundNetLog(), &handler));
+                NetLogWithSource(), &handler));
 }
 
 }  // namespace

@@ -15,11 +15,6 @@ bool QuicPacketCreatorPeer::SendVersionInPacket(QuicPacketCreator* creator) {
 }
 
 // static
-bool QuicPacketCreatorPeer::SendPathIdInPacket(QuicPacketCreator* creator) {
-  return creator->send_path_id_in_packet_;
-}
-
-// static
 void QuicPacketCreatorPeer::SetSendVersionInPacket(
     QuicPacketCreator* creator,
     bool send_version_in_packet) {
@@ -27,29 +22,10 @@ void QuicPacketCreatorPeer::SetSendVersionInPacket(
 }
 
 // static
-void QuicPacketCreatorPeer::SetSendPathIdInPacket(QuicPacketCreator* creator,
-                                                  bool send_path_id_in_packet) {
-  creator->send_path_id_in_packet_ = send_path_id_in_packet;
-}
-
-// static
 void QuicPacketCreatorPeer::SetPacketNumberLength(
     QuicPacketCreator* creator,
     QuicPacketNumberLength packet_number_length) {
   creator->packet_.packet_number_length = packet_number_length;
-}
-
-// static
-void QuicPacketCreatorPeer::SetNextPacketNumberLength(
-    QuicPacketCreator* creator,
-    QuicPacketNumberLength next_packet_number_length) {
-  creator->next_packet_number_length_ = next_packet_number_length;
-}
-
-// static
-QuicPacketNumberLength QuicPacketCreatorPeer::NextPacketNumberLength(
-    QuicPacketCreator* creator) {
-  return creator->next_packet_number_length_;
 }
 
 // static
@@ -104,11 +80,6 @@ SerializedPacket QuicPacketCreatorPeer::SerializeAllFrames(
 EncryptionLevel QuicPacketCreatorPeer::GetEncryptionLevel(
     QuicPacketCreator* creator) {
   return creator->packet_.encryption_level;
-}
-
-// static
-QuicPathId QuicPacketCreatorPeer::GetCurrentPath(QuicPacketCreator* creator) {
-  return creator->packet_.path_id;
 }
 
 }  // namespace test

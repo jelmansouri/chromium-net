@@ -11,8 +11,10 @@
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
+#include "net/base/escape.h"
 #include "net/http/http_log_util.h"
 #include "net/http/http_util.h"
+#include "net/log/net_log_capture_mode.h"
 
 namespace net {
 
@@ -27,9 +29,11 @@ const char HttpRequestHeaders::kContentLength[] = "Content-Length";
 const char HttpRequestHeaders::kContentType[] = "Content-Type";
 const char HttpRequestHeaders::kCookie[] = "Cookie";
 const char HttpRequestHeaders::kHost[] = "Host";
+const char HttpRequestHeaders::kIfMatch[] = "If-Match";
 const char HttpRequestHeaders::kIfModifiedSince[] = "If-Modified-Since";
 const char HttpRequestHeaders::kIfNoneMatch[] = "If-None-Match";
 const char HttpRequestHeaders::kIfRange[] = "If-Range";
+const char HttpRequestHeaders::kIfUnmodifiedSince[] = "If-Unmodified-Since";
 const char HttpRequestHeaders::kOrigin[] = "Origin";
 const char HttpRequestHeaders::kPragma[] = "Pragma";
 const char HttpRequestHeaders::kProxyAuthorization[] = "Proxy-Authorization";
@@ -187,14 +191,16 @@ std::unique_ptr<base::Value> HttpRequestHeaders::NetLogCallback(
     const std::string* request_line,
     NetLogCaptureMode capture_mode) const {
   std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
-  dict->SetString("line", *request_line);
+  dict->SetString("line", EscapeNonASCII(*request_line));
   base::ListValue* headers = new base::ListValue();
-  for (HeaderVector::const_iterator it = headers_.begin();
-       it != headers_.end(); ++it) {
+  for (HeaderVector::const_iterator it = headers_.begin(); it != headers_.end();
+       ++it) {
     std::string log_value =
         ElideHeaderValueForNetLog(capture_mode, it->key, it->value);
-    headers->AppendString(
-        base::StringPrintf("%s: %s", it->key.c_str(), log_value.c_str()));
+    std::string escaped_name = EscapeNonASCII(it->key);
+    std::string escaped_value = EscapeNonASCII(log_value);
+    headers->AppendString(base::StringPrintf("%s: %s", escaped_name.c_str(),
+                                             escaped_value.c_str()));
   }
   dict->Set("headers", headers);
   return std::move(dict);

@@ -14,6 +14,7 @@
 #include "base/threading/non_thread_safe.h"
 #include "net/base/auth.h"
 #include "net/base/completion_callback.h"
+#include "net/base/net_export.h"
 #include "net/cookies/canonical_cookie.h"
 #include "net/proxy/proxy_retry_info.h"
 
@@ -106,10 +107,6 @@ class NET_EXPORT NetworkDelegate : public base::NonThreadSafe {
 
   bool AreExperimentalCookieFeaturesEnabled() const;
 
-  // TODO(jww): Remove this once we ship strict secure cookies:
-  // https://crbug.com/546820
-  bool AreStrictSecureCookiesEnabled() const;
-
   bool CancelURLRequestWithPolicyViolatingReferrerHeader(
       const URLRequest& request,
       const GURL& target_url,
@@ -119,6 +116,10 @@ class NET_EXPORT NetworkDelegate : public base::NonThreadSafe {
   // This is the interface for subclasses of NetworkDelegate to implement. These
   // member functions will be called by the respective public notification
   // member function, which will perform basic sanity checking.
+  //
+  // (NetworkDelegateImpl has default implementations of these member functions.
+  // NetworkDelegate implementations should consider subclassing
+  // NetworkDelegateImpl.)
 
   // Called before a request is sent. Allows the delegate to rewrite the URL
   // being fetched by modifying |new_url|. If set, the URL must be valid. The
@@ -281,13 +282,6 @@ class NET_EXPORT NetworkDelegate : public base::NonThreadSafe {
   // Returns true if the embedder has enabled the experimental features, and
   // false otherwise.
   virtual bool OnAreExperimentalCookieFeaturesEnabled() const = 0;
-
-  // Returns true if the embedder has enabled experimental features or
-  // specifically strict secure cookies, and false otherwise.
-  //
-  // TODO(jww): Remove this once we ship strict secure cookies:
-  // https://crbug.com/546820.
-  virtual bool OnAreStrictSecureCookiesEnabled() const = 0;
 
   // Called when the |referrer_url| for requesting |target_url| during handling
   // of the |request| is does not comply with the referrer policy (e.g. a

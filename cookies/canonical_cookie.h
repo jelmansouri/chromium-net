@@ -52,7 +52,6 @@ class NET_EXPORT CanonicalCookie {
                                                  bool secure,
                                                  bool http_only,
                                                  CookieSameSite same_site,
-                                                 bool enforce_strict_secure,
                                                  CookiePriority priority);
 
   // Creates a canonical cookie from unparsed attribute values.
@@ -139,6 +138,8 @@ class NET_EXPORT CanonicalCookie {
   std::string DebugString() const;
 
   static std::string CanonPath(const GURL& url, const ParsedCookie& pc);
+
+  // Returns a "null" time if expiration was unspecified or invalid.
   static base::Time CanonExpiration(const ParsedCookie& pc,
                                     const base::Time& current,
                                     const base::Time& server_time);

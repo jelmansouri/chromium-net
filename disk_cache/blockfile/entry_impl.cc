@@ -19,6 +19,7 @@
 #include "net/disk_cache/blockfile/sparse_control.h"
 #include "net/disk_cache/cache_util.h"
 #include "net/disk_cache/net_log_parameters.h"
+#include "net/log/net_log.h"
 #include "net/log/net_log_event_type.h"
 #include "net/log/net_log_source_type.h"
 
@@ -40,17 +41,16 @@ class SyncCallback: public disk_cache::FileIOCallback {
  public:
   // |end_event_type| is the event type to log on completion.  Logs nothing on
   // discard, or when the NetLog is not set to log all events.
-  SyncCallback(disk_cache::EntryImpl* entry,
+  SyncCallback(scoped_refptr<disk_cache::EntryImpl> entry,
                net::IOBuffer* buffer,
                const net::CompletionCallback& callback,
                net::NetLogEventType end_event_type)
-      : entry_(entry),
+      : entry_(std::move(entry)),
         callback_(callback),
         buf_(buffer),
         start_(TimeTicks::Now()),
         end_event_type_(end_event_type) {
-    entry->AddRef();
-    entry->IncrementIoCount();
+    entry_->IncrementIoCount();
   }
   ~SyncCallback() override {}
 
@@ -58,7 +58,7 @@ class SyncCallback: public disk_cache::FileIOCallback {
   void Discard();
 
  private:
-  disk_cache::EntryImpl* entry_;
+  scoped_refptr<disk_cache::EntryImpl> entry_;
   net::CompletionCallback callback_;
   scoped_refptr<net::IOBuffer> buf_;
   TimeTicks start_;
@@ -79,7 +79,6 @@ void SyncCallback::OnFileIOComplete(int bytes_copied) {
     buf_ = NULL;  // Release the buffer before invoking the callback.
     callback_.Run(bytes_copied);
   }
-  entry_->Release();
   delete this;
 }
 
@@ -735,13 +734,13 @@ void EntryImpl::ReportIOTime(Operation op, const base::TimeTicks& start) {
 
 void EntryImpl::BeginLogging(net::NetLog* net_log, bool created) {
   DCHECK(!net_log_.net_log());
-  net_log_ =
-      net::BoundNetLog::Make(net_log, net::NetLogSourceType::DISK_CACHE_ENTRY);
+  net_log_ = net::NetLogWithSource::Make(
+      net_log, net::NetLogSourceType::DISK_CACHE_ENTRY);
   net_log_.BeginEvent(net::NetLogEventType::DISK_CACHE_ENTRY_IMPL,
                       CreateNetLogEntryCreationCallback(this, created));
 }
 
-const net::BoundNetLog& EntryImpl::net_log() const {
+const net::NetLogWithSource& EntryImpl::net_log() const {
   return net_log_;
 }
 
@@ -1048,7 +1047,7 @@ int EntryImpl::InternalReadData(int index, int offset,
 
   SyncCallback* io_callback = NULL;
   if (!callback.is_null()) {
-    io_callback = new SyncCallback(this, buf, callback,
+    io_callback = new SyncCallback(make_scoped_refptr(this), buf, callback,
                                    net::NetLogEventType::ENTRY_READ_DATA);
   }
 

@@ -14,7 +14,7 @@
 #include "net/base/net_errors.h"
 #include "net/log/net_log_event_type.h"
 #include "net/quic/chromium/quic_chromium_client_session.h"
-#include "net/quic/core/quic_http_utils.h"
+#include "net/quic/chromium/quic_http_utils.h"
 #include "net/quic/core/quic_spdy_session.h"
 #include "net/quic/core/quic_write_blocked_list.h"
 #include "net/quic/core/spdy_utils.h"
@@ -24,7 +24,7 @@ namespace net {
 QuicChromiumClientStream::QuicChromiumClientStream(
     QuicStreamId id,
     QuicClientSessionBase* session,
-    const BoundNetLog& net_log)
+    const NetLogWithSource& net_log)
     : QuicSpdyStream(id, session),
       net_log_(net_log),
       delegate_(nullptr),
@@ -36,33 +36,6 @@ QuicChromiumClientStream::QuicChromiumClientStream(
 QuicChromiumClientStream::~QuicChromiumClientStream() {
   if (delegate_)
     delegate_->OnClose();
-}
-
-void QuicChromiumClientStream::OnStreamHeadersComplete(bool fin,
-                                                       size_t frame_len) {
-  QuicSpdyStream::OnStreamHeadersComplete(fin, frame_len);
-  if (decompressed_headers().empty() && !decompressed_trailers().empty()) {
-    DCHECK(trailers_decompressed());
-    // The delegate will read the trailers via a posted task.
-    NotifyDelegateOfHeadersCompleteLater(received_trailers().Clone(),
-                                         frame_len);
-  } else {
-    DCHECK(!headers_delivered_);
-    SpdyHeaderBlock headers;
-    SpdyFramer framer(HTTP2);
-    size_t headers_len = decompressed_headers().length();
-    const char* header_data = decompressed_headers().data();
-    if (!framer.ParseHeaderBlockInBuffer(header_data, headers_len, &headers)) {
-      DLOG(WARNING) << "Invalid headers";
-      Reset(QUIC_BAD_APPLICATION_PAYLOAD);
-      return;
-    }
-    MarkHeadersConsumed(headers_len);
-    session_->OnInitialHeadersComplete(id(), headers);
-
-    // The delegate will read the headers via a posted task.
-    NotifyDelegateOfHeadersCompleteLater(std::move(headers), frame_len);
-  }
 }
 
 void QuicChromiumClientStream::OnInitialHeadersComplete(
@@ -95,23 +68,6 @@ void QuicChromiumClientStream::OnTrailingHeadersComplete(
   NotifyDelegateOfHeadersCompleteLater(received_trailers().Clone(), frame_len);
 }
 
-void QuicChromiumClientStream::OnPromiseHeadersComplete(
-    QuicStreamId promised_id,
-    size_t frame_len) {
-  size_t headers_len = decompressed_headers().length();
-  SpdyHeaderBlock headers;
-  SpdyFramer framer(HTTP2);
-  if (!framer.ParseHeaderBlockInBuffer(decompressed_headers().data(),
-                                       headers_len, &headers)) {
-    DLOG(WARNING) << "Invalid headers";
-    Reset(QUIC_BAD_APPLICATION_PAYLOAD);
-    return;
-  }
-  MarkHeadersConsumed(headers_len);
-
-  session_->HandlePromised(id(), promised_id, headers);
-}
-
 void QuicChromiumClientStream::OnPromiseHeaderList(
     QuicStreamId promised_id,
     size_t frame_len,
@@ -136,6 +92,12 @@ void QuicChromiumClientStream::OnDataAvailable() {
     return;
   }
 
+  if (!sequencer()->HasBytesToRead() && !FinishedReadingTrailers()) {
+    // If there is no data to read, wait until either FIN is received or
+    // trailers are delivered.
+    return;
+  }
+
   // The delegate will read the data via a posted task, and
   // will be able to, potentially, read all data which has queued up.
   NotifyDelegateOfDataAvailableLater();
@@ -147,11 +109,11 @@ void QuicChromiumClientStream::OnClose() {
     delegate_ = nullptr;
     delegate_tasks_.clear();
   }
-  ReliableQuicStream::OnClose();
+  QuicStream::OnClose();
 }
 
 void QuicChromiumClientStream::OnCanWrite() {
-  ReliableQuicStream::OnCanWrite();
+  QuicStream::OnCanWrite();
 
   if (!HasBufferedData() && !callback_.is_null()) {
     base::ResetAndReturn(&callback_).Run(OK);
@@ -161,7 +123,7 @@ void QuicChromiumClientStream::OnCanWrite() {
 size_t QuicChromiumClientStream::WriteHeaders(
     SpdyHeaderBlock header_block,
     bool fin,
-    QuicAckListenerInterface* ack_notifier_delegate) {
+    QuicReferenceCountedPointer<QuicAckListenerInterface> ack_listener) {
   if (!session()->IsCryptoHandshakeConfirmed()) {
     auto entry = header_block.find(":method");
     DCHECK(entry != header_block.end());
@@ -172,7 +134,7 @@ size_t QuicChromiumClientStream::WriteHeaders(
       base::Bind(&QuicRequestNetLogCallback, id(), &header_block,
                  QuicSpdyStream::priority()));
   return QuicSpdyStream::WriteHeaders(std::move(header_block), fin,
-                                      ack_notifier_delegate);
+                                      std::move(ack_listener));
 }
 
 SpdyPriority QuicChromiumClientStream::priority() const {
@@ -223,13 +185,14 @@ void QuicChromiumClientStream::SetDelegate(
     QuicChromiumClientStream::Delegate* delegate) {
   DCHECK(!(delegate_ && delegate));
   delegate_ = delegate;
+  if (delegate == nullptr) {
+    DCHECK(delegate_tasks_.empty());
+    return;
+  }
   while (!delegate_tasks_.empty()) {
     base::Closure closure = delegate_tasks_.front();
     delegate_tasks_.pop_front();
     closure.Run();
-  }
-  if (delegate == nullptr && sequencer()->IsClosed()) {
-    OnFinRead();
   }
 }
 
@@ -243,7 +206,7 @@ void QuicChromiumClientStream::OnError(int error) {
 }
 
 int QuicChromiumClientStream::Read(IOBuffer* buf, int buf_len) {
-  if (sequencer()->IsClosed())
+  if (IsDoneReading())
     return 0;  // EOF
 
   if (!HasBytesToRead())
@@ -252,7 +215,12 @@ int QuicChromiumClientStream::Read(IOBuffer* buf, int buf_len) {
   iovec iov;
   iov.iov_base = buf->data();
   iov.iov_len = buf_len;
-  return Readv(&iov, 1);
+  size_t bytes_read = Readv(&iov, 1);
+  // If no more body bytes and trailers are to be delivered, return
+  // ERR_IO_PENDING now because onDataAvailable() will be called after trailers.
+  if (bytes_read == 0 && !FinishedReadingTrailers())
+    return ERR_IO_PENDING;
+  return bytes_read;
 }
 
 bool QuicChromiumClientStream::CanWrite(const CompletionCallback& callback) {
@@ -280,8 +248,9 @@ void QuicChromiumClientStream::NotifyDelegateOfHeadersComplete(
     return;
   // Only mark trailers consumed when we are about to notify delegate.
   if (headers_delivered_) {
-    MarkTrailersConsumed(decompressed_trailers().length());
-    MarkTrailersDelivered();
+    MarkTrailersConsumed();
+    // Post an async task to notify delegate of the FIN flag.
+    NotifyDelegateOfDataAvailableLater();
     net_log_.AddEvent(
         NetLogEventType::QUIC_CHROMIUM_CLIENT_STREAM_READ_RESPONSE_TRAILERS,
         base::Bind(&SpdyHeaderBlockNetLogCallback, &headers));

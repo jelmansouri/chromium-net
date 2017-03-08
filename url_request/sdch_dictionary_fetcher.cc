@@ -17,8 +17,8 @@
 #include "net/base/load_flags.h"
 #include "net/base/sdch_net_log_params.h"
 #include "net/http/http_response_headers.h"
-#include "net/log/net_log.h"
 #include "net/log/net_log_event_type.h"
+#include "net/log/net_log_with_source.h"
 #include "net/url_request/redirect_info.h"
 #include "net/url_request/url_request_context.h"
 #include "net/url_request/url_request_status.h"
@@ -283,7 +283,7 @@ int SdchDictionaryFetcher::DoSendRequest(int rv) {
   current_request_ = context_->CreateRequest(info.url, IDLE, this);
   int load_flags = LOAD_DO_NOT_SEND_COOKIES | LOAD_DO_NOT_SAVE_COOKIES;
   if (info.cache_only)
-    load_flags |= LOAD_ONLY_FROM_CACHE;
+    load_flags |= LOAD_ONLY_FROM_CACHE | LOAD_SKIP_CACHE_VALIDATION;
   current_request_->SetLoadFlags(load_flags);
 
   buffer_ = new IOBuffer(kBufferSize);

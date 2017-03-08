@@ -27,8 +27,9 @@
 #include "net/base/net_errors.h"
 #include "net/base/proxy_delegate.h"
 #include "net/base/url_util.h"
-#include "net/log/net_log.h"
+#include "net/log/net_log_capture_mode.h"
 #include "net/log/net_log_event_type.h"
+#include "net/log/net_log_with_source.h"
 #include "net/proxy/dhcp_proxy_script_fetcher.h"
 #include "net/proxy/multi_threaded_proxy_resolver.h"
 #include "net/proxy/proxy_config_service_fixed.h"
@@ -186,16 +187,9 @@ class ProxyResolverNull : public ProxyResolver {
   int GetProxyForURL(const GURL& url,
                      ProxyInfo* results,
                      const CompletionCallback& callback,
-                     RequestHandle* request,
-                     const BoundNetLog& net_log) override {
+                     std::unique_ptr<Request>* request,
+                     const NetLogWithSource& net_log) override {
     return ERR_NOT_IMPLEMENTED;
-  }
-
-  void CancelRequest(RequestHandle request) override { NOTREACHED(); }
-
-  LoadState GetLoadState(RequestHandle request) const override {
-    NOTREACHED();
-    return LOAD_STATE_IDLE;
   }
 
 };
@@ -210,17 +204,10 @@ class ProxyResolverFromPacString : public ProxyResolver {
   int GetProxyForURL(const GURL& url,
                      ProxyInfo* results,
                      const CompletionCallback& callback,
-                     RequestHandle* request,
-                     const BoundNetLog& net_log) override {
+                     std::unique_ptr<Request>* request,
+                     const NetLogWithSource& net_log) override {
     results->UsePacString(pac_string_);
     return OK;
-  }
-
-  void CancelRequest(RequestHandle request) override { NOTREACHED(); }
-
-  LoadState GetLoadState(RequestHandle request) const override {
-    NOTREACHED();
-    return LOAD_STATE_IDLE;
   }
 
  private:
@@ -792,14 +779,14 @@ class ProxyService::PacRequest
              ProxyDelegate* proxy_delegate,
              ProxyInfo* results,
              const CompletionCallback& user_callback,
-             const BoundNetLog& net_log)
+             const NetLogWithSource& net_log)
       : service_(service),
         user_callback_(user_callback),
         results_(results),
         url_(url),
         method_(method),
         proxy_delegate_(proxy_delegate),
-        resolve_job_(NULL),
+        resolve_job_(nullptr),
         config_id_(ProxyConfig::kInvalidConfigID),
         config_source_(PROXY_CONFIG_SOURCE_UNKNOWN),
         net_log_(net_log),
@@ -825,7 +812,7 @@ class ProxyService::PacRequest
 
   bool is_started() const {
     // Note that !! casts to bool. (VS gives a warning otherwise).
-    return !!resolve_job_;
+    return !!resolve_job_.get();
   }
 
   void StartAndCompleteCheckingForSynchronous() {
@@ -840,8 +827,7 @@ class ProxyService::PacRequest
   void CancelResolveJob() {
     DCHECK(is_started());
     // The request may already be running in the resolver.
-    resolver()->CancelRequest(resolve_job_);
-    resolve_job_ = NULL;
+    resolve_job_.reset();
     DCHECK(!is_started());
   }
 
@@ -869,12 +855,12 @@ class ProxyService::PacRequest
   int QueryDidComplete(int result_code) {
     DCHECK(!was_cancelled());
 
-    // This state is cleared when resolve_job_ is set to nullptr below.
+    // This state is cleared when resolve_job_ is reset below.
     bool script_executed = is_started();
 
     // Clear |resolve_job_| so is_started() returns false while
     // DidFinishResolvingProxy() runs.
-    resolve_job_ = nullptr;
+    resolve_job_.reset();
 
     // Note that DidFinishResolvingProxy might modify |results_|.
     int rv = service_->DidFinishResolvingProxy(url_, method_, proxy_delegate_,
@@ -896,11 +882,11 @@ class ProxyService::PacRequest
     return rv;
   }
 
-  BoundNetLog* net_log() { return &net_log_; }
+  NetLogWithSource* net_log() { return &net_log_; }
 
   LoadState GetLoadState() const {
     if (is_started())
-      return resolver()->GetLoadState(resolve_job_);
+      return resolve_job_->GetLoadState();
     return LOAD_STATE_RESOLVING_PROXY_FOR_URL;
   }
 
@@ -933,10 +919,10 @@ class ProxyService::PacRequest
   GURL url_;
   std::string method_;
   ProxyDelegate* proxy_delegate_;
-  ProxyResolver::RequestHandle resolve_job_;
+  std::unique_ptr<ProxyResolver::Request> resolve_job_;
   ProxyConfig::ID config_id_;  // The config id when the resolve was started.
   ProxyConfigSource config_source_;  // The source of proxy settings.
-  BoundNetLog net_log_;
+  NetLogWithSource net_log_;
   // Time when the request was created.  Stored here rather than in |results_|
   // because the time in |results_| will be cleared.
   TimeTicks creation_time_;
@@ -1039,7 +1025,7 @@ int ProxyService::ResolveProxy(const GURL& raw_url,
                                const CompletionCallback& callback,
                                PacRequest** pac_request,
                                ProxyDelegate* proxy_delegate,
-                               const BoundNetLog& net_log) {
+                               const NetLogWithSource& net_log) {
   DCHECK(!callback.is_null());
   return ResolveProxyHelper(raw_url, method, result, callback, pac_request,
                             proxy_delegate, net_log);
@@ -1051,7 +1037,7 @@ int ProxyService::ResolveProxyHelper(const GURL& raw_url,
                                      const CompletionCallback& callback,
                                      PacRequest** pac_request,
                                      ProxyDelegate* proxy_delegate,
-                                     const BoundNetLog& net_log) {
+                                     const NetLogWithSource& net_log) {
   DCHECK(CalledOnValidThread());
 
   net_log.BeginEvent(NetLogEventType::PROXY_SERVICE);
@@ -1108,11 +1094,12 @@ int ProxyService::ResolveProxyHelper(const GURL& raw_url,
   return rv;  // ERR_IO_PENDING
 }
 
-bool ProxyService::TryResolveProxySynchronously(const GURL& raw_url,
-                                                const std::string& method,
-                                                ProxyInfo* result,
-                                                ProxyDelegate* proxy_delegate,
-                                                const BoundNetLog& net_log) {
+bool ProxyService::TryResolveProxySynchronously(
+    const GURL& raw_url,
+    const std::string& method,
+    ProxyInfo* result,
+    ProxyDelegate* proxy_delegate,
+    const NetLogWithSource& net_log) {
   CompletionCallback null_callback;
   return ResolveProxyHelper(raw_url, method, result, null_callback,
                             nullptr /* pac_request*/, proxy_delegate,
@@ -1280,7 +1267,7 @@ int ProxyService::ReconsiderProxyAfterError(const GURL& url,
                                             const CompletionCallback& callback,
                                             PacRequest** pac_request,
                                             ProxyDelegate* proxy_delegate,
-                                            const BoundNetLog& net_log) {
+                                            const NetLogWithSource& net_log) {
   DCHECK(CalledOnValidThread());
 
   // Check to see if we have a new config since ResolveProxy was called.  We
@@ -1314,7 +1301,7 @@ bool ProxyService::MarkProxiesAsBadUntil(
     const ProxyInfo& result,
     base::TimeDelta retry_delay,
     const std::vector<ProxyServer>& additional_bad_proxies,
-    const BoundNetLog& net_log) {
+    const NetLogWithSource& net_log) {
   result.proxy_list_.UpdateRetryInfoOnFallback(&proxy_retry_info_, retry_delay,
                                                false, additional_bad_proxies,
                                                OK, net_log);
@@ -1379,7 +1366,7 @@ int ProxyService::DidFinishResolvingProxy(const GURL& url,
                                           ProxyDelegate* proxy_delegate,
                                           ProxyInfo* result,
                                           int result_code,
-                                          const BoundNetLog& net_log,
+                                          const NetLogWithSource& net_log,
                                           base::TimeTicks start_time,
                                           bool script_executed) {
   // Don't track any metrics if start_time is 0, which will happen when the user

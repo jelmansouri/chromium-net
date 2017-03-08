@@ -29,17 +29,17 @@
 #include "net/base/test_completion_callback.h"
 #include "net/http/http_auth_controller.h"
 #include "net/http/http_proxy_client_socket_pool.h"
-#include "net/log/net_log.h"
+#include "net/log/net_log_with_source.h"
 #include "net/socket/client_socket_factory.h"
 #include "net/socket/client_socket_handle.h"
 #include "net/socket/connection_attempts.h"
+#include "net/socket/datagram_client_socket.h"
 #include "net/socket/socket_performance_watcher.h"
 #include "net/socket/socks_client_socket_pool.h"
 #include "net/socket/ssl_client_socket.h"
 #include "net/socket/ssl_client_socket_pool.h"
 #include "net/socket/transport_client_socket_pool.h"
 #include "net/ssl/ssl_config_service.h"
-#include "net/udp/datagram_client_socket.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace base {
@@ -47,6 +47,8 @@ class RunLoop;
 }
 
 namespace net {
+
+class NetLog;
 
 const NetworkChangeNotifier::NetworkHandle kDefaultNetworkForTests = 1;
 const NetworkChangeNotifier::NetworkHandle kNewNetworkForTests = 2;
@@ -278,12 +280,12 @@ class StaticSocketDataHelper {
                          size_t writes_count);
   ~StaticSocketDataHelper();
 
-  // These functions get access to the next available read and write data,
-  // or null if there is no more data available.
+  // These functions get access to the next available read and write data. They
+  // CHECK fail if there is no data available.
   const MockRead& PeekRead() const;
   const MockWrite& PeekWrite() const;
 
-  // Returns the current read or write , and then advances to the next one.
+  // Returns the current read or write, and then advances to the next one.
   const MockRead& AdvanceRead();
   const MockWrite& AdvanceWrite();
 
@@ -304,6 +306,10 @@ class StaticSocketDataHelper {
   bool AllWriteDataConsumed() const { return write_index_ >= write_count_; }
 
  private:
+  // Returns the next available read or write that is not a pause event. CHECK
+  // fails if no data is available.
+  const MockWrite& PeekRealWrite() const;
+
   MockRead* reads_;
   size_t read_index_;
   size_t read_count_;
@@ -430,7 +436,7 @@ class SequencedSocketData : public SocketDataProvider {
     IDLE,        // No async operation is in progress.
     PENDING,     // An async operation in waiting for another opteration to
                  // complete.
-    COMPLETING,  // A task has been posted to complet an async operation.
+    COMPLETING,  // A task has been posted to complete an async operation.
     PAUSED,      // IO is paused until Resume() is called.
   };
 
@@ -512,17 +518,21 @@ class MockClientSocketFactory : public ClientSocketFactory {
     return mock_data_;
   }
 
+  void set_enable_read_if_ready(bool enable_read_if_ready) {
+    enable_read_if_ready_ = enable_read_if_ready;
+  }
+
   // ClientSocketFactory
   std::unique_ptr<DatagramClientSocket> CreateDatagramClientSocket(
       DatagramSocket::BindType bind_type,
       const RandIntCallback& rand_int_cb,
       NetLog* net_log,
-      const NetLog::Source& source) override;
+      const NetLogSource& source) override;
   std::unique_ptr<StreamSocket> CreateTransportClientSocket(
       const AddressList& addresses,
       std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
       NetLog* net_log,
-      const NetLog::Source& source) override;
+      const NetLogSource& source) override;
   std::unique_ptr<SSLClientSocket> CreateSSLClientSocket(
       std::unique_ptr<ClientSocketHandle> transport_socket,
       const HostPortPair& host_and_port,
@@ -539,14 +549,19 @@ class MockClientSocketFactory : public ClientSocketFactory {
   SocketDataProviderArray<SSLSocketDataProvider> mock_ssl_data_;
   std::vector<uint16_t> udp_client_socket_ports_;
 
+  // If true, ReadIfReady() is enabled; otherwise ReadIfReady() returns
+  // ERR_READ_IF_READY_NOT_IMPLEMENTED.
+  bool enable_read_if_ready_;
+
   DISALLOW_COPY_AND_ASSIGN(MockClientSocketFactory);
 };
 
 class MockClientSocket : public SSLClientSocket {
  public:
-  // The BoundNetLog is needed to test LoadTimingInfo, which uses NetLog IDs as
+  // The NetLogWithSource is needed to test LoadTimingInfo, which uses NetLog
+  // IDs as
   // unique socket IDs.
-  explicit MockClientSocket(const BoundNetLog& net_log);
+  explicit MockClientSocket(const NetLogWithSource& net_log);
 
   // Socket implementation.
   int Read(IOBuffer* buf,
@@ -565,10 +580,10 @@ class MockClientSocket : public SSLClientSocket {
   bool IsConnectedAndIdle() const override;
   int GetPeerAddress(IPEndPoint* address) const override;
   int GetLocalAddress(IPEndPoint* address) const override;
-  const BoundNetLog& NetLog() const override;
+  const NetLogWithSource& NetLog() const override;
   void SetSubresourceSpeculation() override {}
   void SetOmniboxSpeculation() override {}
-  bool WasNpnNegotiated() const override;
+  bool WasAlpnNegotiated() const override;
   NextProto GetNegotiatedProtocol() const override;
   void GetConnectionAttempts(ConnectionAttempts* out) const override;
   void ClearConnectionAttempts() override {}
@@ -583,8 +598,9 @@ class MockClientSocket : public SSLClientSocket {
                            unsigned char* out,
                            unsigned int outlen) override;
   ChannelIDService* GetChannelIDService() const override;
-  Error GetSignedEKMForTokenBinding(crypto::ECPrivateKey* key,
-                                    std::vector<uint8_t>* out) override;
+  Error GetTokenBindingSignature(crypto::ECPrivateKey* key,
+                                 TokenBindingType tb_type,
+                                 std::vector<uint8_t>* out) override;
   crypto::ECPrivateKey* GetChannelIDKey() const override;
 
  protected:
@@ -598,7 +614,7 @@ class MockClientSocket : public SSLClientSocket {
   // Address of the "remote" peer we're connected to.
   IPEndPoint peer_addr_;
 
-  BoundNetLog net_log_;
+  NetLogWithSource net_log_;
 
  private:
   base::WeakPtrFactory<MockClientSocket> weak_factory_;
@@ -619,6 +635,9 @@ class MockTCPClientSocket : public MockClientSocket, public AsyncSocket {
   int Read(IOBuffer* buf,
            int buf_len,
            const CompletionCallback& callback) override;
+  int ReadIfReady(IOBuffer* buf,
+                  int buf_len,
+                  const CompletionCallback& callback) override;
   int Write(IOBuffer* buf,
             int buf_len,
             const CompletionCallback& callback) override;
@@ -642,9 +661,15 @@ class MockTCPClientSocket : public MockClientSocket, public AsyncSocket {
   void OnConnectComplete(const MockConnect& data) override;
   void OnDataProviderDestroyed() override;
 
- private:
-  int CompleteRead();
+  void set_enable_read_if_ready(bool enable_read_if_ready) {
+    enable_read_if_ready_ = enable_read_if_ready;
+  }
 
+ private:
+  void RetryRead(int rv);
+  int ReadIfReadyImpl(IOBuffer* buf,
+                      int buf_len,
+                      const CompletionCallback& callback);
   AddressList addresses_;
 
   SocketDataProvider* data_;
@@ -660,10 +685,18 @@ class MockTCPClientSocket : public MockClientSocket, public AsyncSocket {
   // While an asynchronous read is pending, we save our user-buffer state.
   scoped_refptr<IOBuffer> pending_read_buf_;
   int pending_read_buf_len_;
-  CompletionCallback pending_connect_callback_;
   CompletionCallback pending_read_callback_;
+
+  // Non-null when a ReadIfReady() is pending.
+  CompletionCallback pending_read_if_ready_callback_;
+
+  CompletionCallback pending_connect_callback_;
   CompletionCallback pending_write_callback_;
   bool was_used_to_convey_data_;
+
+  // If true, ReadIfReady() is enabled; otherwise ReadIfReady() returns
+  // ERR_READ_IF_READY_NOT_IMPLEMENTED.
+  bool enable_read_if_ready_;
 
   ConnectionAttempts connection_attempts_;
 
@@ -682,6 +715,9 @@ class MockSSLClientSocket : public MockClientSocket, public AsyncSocket {
   int Read(IOBuffer* buf,
            int buf_len,
            const CompletionCallback& callback) override;
+  int ReadIfReady(IOBuffer* buf,
+                  int buf_len,
+                  const CompletionCallback& callback) override;
   int Write(IOBuffer* buf,
             int buf_len,
             const CompletionCallback& callback) override;
@@ -693,14 +729,15 @@ class MockSSLClientSocket : public MockClientSocket, public AsyncSocket {
   bool IsConnectedAndIdle() const override;
   bool WasEverUsed() const override;
   int GetPeerAddress(IPEndPoint* address) const override;
-  bool WasNpnNegotiated() const override;
+  bool WasAlpnNegotiated() const override;
   NextProto GetNegotiatedProtocol() const override;
   bool GetSSLInfo(SSLInfo* ssl_info) override;
 
   // SSLClientSocket implementation.
   void GetSSLCertRequestInfo(SSLCertRequestInfo* cert_request_info) override;
-  Error GetSignedEKMForTokenBinding(crypto::ECPrivateKey* key,
-                                    std::vector<uint8_t>* out) override;
+  Error GetTokenBindingSignature(crypto::ECPrivateKey* key,
+                                 TokenBindingType tb_type,
+                                 std::vector<uint8_t>* out) override;
   // This MockSocket does not implement the manual async IO feature.
   void OnReadComplete(const MockRead& data) override;
   void OnWriteComplete(int rv) override;
@@ -744,7 +781,7 @@ class MockUDPClientSocket : public DatagramClientSocket, public AsyncSocket {
   int GetPeerAddress(IPEndPoint* address) const override;
   int GetLocalAddress(IPEndPoint* address) const override;
   void UseNonBlockingIO() override;
-  const BoundNetLog& NetLog() const override;
+  const NetLogWithSource& NetLog() const override;
 
   // DatagramClientSocket implementation.
   int Connect(const IPEndPoint& address) override;
@@ -787,7 +824,7 @@ class MockUDPClientSocket : public DatagramClientSocket, public AsyncSocket {
   CompletionCallback pending_read_callback_;
   CompletionCallback pending_write_callback_;
 
-  BoundNetLog net_log_;
+  NetLogWithSource net_log_;
 
   base::WeakPtrFactory<MockUDPClientSocket> weak_factory_;
 
@@ -843,7 +880,7 @@ class ClientSocketPoolTest {
     requests_.push_back(base::WrapUnique(request));
     int rv = request->handle()->Init(group_name, socket_params, priority,
                                      respect_limits, request->callback(),
-                                     socket_pool, BoundNetLog());
+                                     socket_pool, NetLogWithSource());
     if (rv != ERR_IO_PENDING)
       request_order_.push_back(request);
     return rv;
@@ -863,7 +900,7 @@ class ClientSocketPoolTest {
   void ReleaseAllConnections(KeepAlive keep_alive);
 
   // Note that this uses 0-based indices, while GetOrderOfRequest takes and
-  // returns 0-based indices.
+  // returns 1-based indices.
   TestSocketRequest* request(int i) { return requests_[i].get(); }
 
   size_t requests_size() const { return requests_.size(); }
@@ -932,8 +969,10 @@ class MockTransportClientSocketPool : public TransportClientSocketPool {
                     RespectLimits respect_limits,
                     ClientSocketHandle* handle,
                     const CompletionCallback& callback,
-                    const BoundNetLog& net_log) override;
-
+                    const NetLogWithSource& net_log) override;
+  void SetPriority(const std::string& group_name,
+                   ClientSocketHandle* handle,
+                   RequestPriority priority) override;
   void CancelRequest(const std::string& group_name,
                      ClientSocketHandle* handle) override;
   void ReleaseSocket(const std::string& group_name,
@@ -965,8 +1004,10 @@ class MockSOCKSClientSocketPool : public SOCKSClientSocketPool {
                     RespectLimits respect_limits,
                     ClientSocketHandle* handle,
                     const CompletionCallback& callback,
-                    const BoundNetLog& net_log) override;
-
+                    const NetLogWithSource& net_log) override;
+  void SetPriority(const std::string& group_name,
+                   ClientSocketHandle* handle,
+                   RequestPriority priority) override;
   void CancelRequest(const std::string& group_name,
                      ClientSocketHandle* handle) override;
   void ReleaseSocket(const std::string& group_name,

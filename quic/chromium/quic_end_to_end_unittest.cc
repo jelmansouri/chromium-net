@@ -9,9 +9,10 @@
 
 #include "base/compiler_specific.h"
 #include "base/memory/ptr_util.h"
+#include "base/message_loop/message_loop.h"
 #include "base/run_loop.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/test/scoped_task_scheduler.h"
 #include "net/base/elements_upload_data_stream.h"
 #include "net/base/ip_address.h"
 #include "net/base/test_completion_callback.h"
@@ -28,6 +29,7 @@
 #include "net/http/http_server_properties_impl.h"
 #include "net/http/http_transaction_test_util.h"
 #include "net/http/transport_security_state.h"
+#include "net/log/net_log_with_source.h"
 #include "net/proxy/proxy_service.h"
 #include "net/quic/test_tools/crypto_test_utils.h"
 #include "net/quic/test_tools/quic_test_utils.h"
@@ -36,9 +38,8 @@
 #include "net/test/cert_test_util.h"
 #include "net/test/gtest_util.h"
 #include "net/test/test_data_directory.h"
-#include "net/tools/quic/quic_in_memory_cache.h"
+#include "net/tools/quic/quic_http_response_cache.h"
 #include "net/tools/quic/quic_simple_server.h"
-#include "net/tools/quic/test_tools/quic_in_memory_cache_peer.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/platform_test.h"
@@ -48,7 +49,6 @@ using base::StringPiece;
 namespace net {
 
 using test::IsOk;
-using test::QuicInMemoryCachePeer;
 
 namespace test {
 
@@ -127,8 +127,7 @@ class QuicEndToEndTest : public ::testing::TestWithParam<TestParams> {
     params_.http_auth_handler_factory = auth_handler_factory_.get();
     params_.http_server_properties = &http_server_properties_;
     channel_id_service_.reset(
-        new ChannelIDService(new DefaultChannelIDStore(nullptr),
-                             base::ThreadTaskRunnerHandle::Get()));
+        new ChannelIDService(new DefaultChannelIDStore(nullptr)));
     params_.channel_id_service = channel_id_service_.get();
 
     CertVerifyResult verify_result;
@@ -153,7 +152,6 @@ class QuicEndToEndTest : public ::testing::TestWithParam<TestParams> {
   }
 
   void SetUp() override {
-    QuicInMemoryCachePeer::ResetForTests();
     StartServer();
 
     // Use a mapped host resolver so that request for test.example.com (port 80)
@@ -170,7 +168,7 @@ class QuicEndToEndTest : public ::testing::TestWithParam<TestParams> {
     transaction_factory_.reset(new TestTransactionFactory(params_));
   }
 
-  void TearDown() override { QuicInMemoryCachePeer::ResetForTests(); }
+  void TearDown() override {}
 
   // Starts the QUIC server listening on a random port.
   void StartServer() {
@@ -180,9 +178,9 @@ class QuicEndToEndTest : public ::testing::TestWithParam<TestParams> {
     server_config_.SetInitialSessionFlowControlWindowToSend(
         kInitialSessionFlowControlWindowForTest);
     server_config_options_.token_binding_params = QuicTagVector{kTB10, kP256};
-    server_.reset(new QuicSimpleServer(CryptoTestUtils::ProofSourceForTesting(),
-                                       server_config_, server_config_options_,
-                                       AllSupportedVersions()));
+    server_.reset(new QuicSimpleServer(
+        crypto_test_utils::ProofSourceForTesting(), server_config_,
+        server_config_options_, AllSupportedVersions(), &response_cache_));
     server_->Listen(server_address_);
     server_address_ = server_->server_address();
     server_->StartReading();
@@ -195,8 +193,8 @@ class QuicEndToEndTest : public ::testing::TestWithParam<TestParams> {
                   int response_code,
                   StringPiece response_detail,
                   StringPiece body) {
-    QuicInMemoryCache::GetInstance()->AddSimpleResponse(
-        "test.example.com", path, response_code, body);
+    response_cache_.AddSimpleResponse("test.example.com", path, response_code,
+                                      body);
   }
 
   // Populates |request_body_| with |length_| ASCII bytes.
@@ -219,9 +217,9 @@ class QuicEndToEndTest : public ::testing::TestWithParam<TestParams> {
     request_.method = "POST";
     request_.url = GURL("https://test.example.com/");
     request_.upload_data_stream = upload_data_stream_.get();
-    ASSERT_THAT(
-        request_.upload_data_stream->Init(CompletionCallback(), BoundNetLog()),
-        IsOk());
+    ASSERT_THAT(request_.upload_data_stream->Init(CompletionCallback(),
+                                                  NetLogWithSource()),
+                IsOk());
   }
 
   // Checks that |consumer| completed and received |status_line| and |body|.
@@ -251,6 +249,7 @@ class QuicEndToEndTest : public ::testing::TestWithParam<TestParams> {
   std::string request_body_;
   std::unique_ptr<UploadDataStream> upload_data_stream_;
   std::unique_ptr<QuicSimpleServer> server_;
+  QuicHttpResponseCache response_cache_;
   IPEndPoint server_address_;
   std::string server_hostname_;
   QuicConfig server_config_;
@@ -270,7 +269,7 @@ TEST_P(QuicEndToEndTest, LargeGetWithNoPacketLoss) {
 
   TestTransactionConsumer consumer(DEFAULT_PRIORITY,
                                    transaction_factory_.get());
-  consumer.Start(&request_, BoundNetLog());
+  consumer.Start(&request_, NetLogWithSource());
 
   // Will terminate when the last consumer completes.
   base::RunLoop().Run();
@@ -279,6 +278,10 @@ TEST_P(QuicEndToEndTest, LargeGetWithNoPacketLoss) {
 }
 
 TEST_P(QuicEndToEndTest, TokenBinding) {
+  // Required by ChannelIDService.
+  base::test::ScopedTaskScheduler scoped_task_scheduler(
+      base::MessageLoop::current());
+
   // Enable token binding and re-initialize the TestTransactionFactory.
   params_.enable_token_binding = true;
   transaction_factory_.reset(new TestTransactionFactory(params_));
@@ -287,7 +290,7 @@ TEST_P(QuicEndToEndTest, TokenBinding) {
 
   TestTransactionConsumer consumer(DEFAULT_PRIORITY,
                                    transaction_factory_.get());
-  consumer.Start(&request_, BoundNetLog());
+  consumer.Start(&request_, NetLogWithSource());
 
   // Will terminate when the last consumer completes.
   base::RunLoop().Run();
@@ -310,7 +313,7 @@ TEST_P(QuicEndToEndTest, LargePostWithNoPacketLoss) {
 
   TestTransactionConsumer consumer(DEFAULT_PRIORITY,
                                    transaction_factory_.get());
-  consumer.Start(&request_, BoundNetLog());
+  consumer.Start(&request_, NetLogWithSource());
 
   // Will terminate when the last consumer completes.
   base::RunLoop().Run();
@@ -332,7 +335,7 @@ TEST_P(QuicEndToEndTest, LargePostWithPacketLoss) {
 
   TestTransactionConsumer consumer(DEFAULT_PRIORITY,
                                    transaction_factory_.get());
-  consumer.Start(&request_, BoundNetLog());
+  consumer.Start(&request_, NetLogWithSource());
 
   // Will terminate when the last consumer completes.
   base::RunLoop().Run();
@@ -351,22 +354,19 @@ TEST_P(QuicEndToEndTest, UberTest) {
   const char kResponseBody[] = "some really big response body";
   AddToCache(request_.url.PathForRequest(), 200, "OK", kResponseBody);
 
-  std::vector<TestTransactionConsumer*> consumers;
-  size_t num_requests = 100;
-  for (size_t i = 0; i < num_requests; ++i) {
+  std::vector<std::unique_ptr<TestTransactionConsumer>> consumers;
+  for (size_t i = 0; i < 100; ++i) {
     TestTransactionConsumer* consumer = new TestTransactionConsumer(
         DEFAULT_PRIORITY, transaction_factory_.get());
-    consumers.push_back(consumer);
-    consumer->Start(&request_, BoundNetLog());
+    consumers.push_back(base::WrapUnique(consumer));
+    consumer->Start(&request_, NetLogWithSource());
   }
 
   // Will terminate when the last consumer completes.
   base::RunLoop().Run();
 
-  for (size_t i = 0; i < num_requests; ++i) {
-    CheckResponse(*consumers[i], "HTTP/1.1 200", kResponseBody);
-  }
-  base::STLDeleteElements(&consumers);
+  for (const auto& consumer : consumers)
+    CheckResponse(*consumer.get(), "HTTP/1.1 200", kResponseBody);
 }
 
 }  // namespace test

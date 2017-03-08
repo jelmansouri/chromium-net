@@ -35,6 +35,7 @@
 #include "net/http/http_server_properties_manager.h"
 #include "net/http/transport_security_persister.h"
 #include "net/http/transport_security_state.h"
+#include "net/net_features.h"
 #include "net/quic/chromium/quic_stream_factory.h"
 #include "net/ssl/channel_id_service.h"
 #include "net/ssl/default_channel_id_store.h"
@@ -48,11 +49,11 @@
 #include "net/url_request/url_request_job_factory_impl.h"
 #include "net/url_request/url_request_throttler_manager.h"
 
-#if !defined(DISABLE_FILE_SUPPORT)
+#if !BUILDFLAG(DISABLE_FILE_SUPPORT)
 #include "net/url_request/file_protocol_handler.h"  // nogncheck
 #endif
 
-#if !defined(DISABLE_FTP_SUPPORT)
+#if !BUILDFLAG(DISABLE_FTP_SUPPORT)
 #include "net/ftp/ftp_network_layer.h"             // nogncheck
 #include "net/url_request/ftp_protocol_handler.h"  // nogncheck
 #endif
@@ -201,10 +202,10 @@ URLRequestContextBuilder::HttpNetworkSessionParams::~HttpNetworkSessionParams()
 
 URLRequestContextBuilder::URLRequestContextBuilder()
     : data_enabled_(false),
-#if !defined(DISABLE_FILE_SUPPORT)
+#if !BUILDFLAG(DISABLE_FILE_SUPPORT)
       file_enabled_(false),
 #endif
-#if !defined(DISABLE_FTP_SUPPORT)
+#if !BUILDFLAG(DISABLE_FTP_SUPPORT)
       ftp_enabled_(false),
 #endif
       http_cache_enabled_(true),
@@ -355,10 +356,8 @@ std::unique_ptr<URLRequestContext> URLRequestContextBuilder::Build() {
   } else {
     std::unique_ptr<CookieStore> cookie_store(
         new CookieMonster(nullptr, nullptr));
-    // TODO(mmenke):  This always creates a file thread, even when it ends up
-    // not being used.  Consider lazily creating the thread.
-    std::unique_ptr<ChannelIDService> channel_id_service(new ChannelIDService(
-        new DefaultChannelIDStore(NULL), context->GetFileTaskRunner()));
+    std::unique_ptr<ChannelIDService> channel_id_service(
+        new ChannelIDService(new DefaultChannelIDStore(NULL)));
     cookie_store->SetChannelIDServiceID(channel_id_service->GetUniqueID());
     storage->set_cookie_store(std::move(cookie_store));
     storage->set_channel_id_service(std::move(channel_id_service));
@@ -495,22 +494,20 @@ std::unique_ptr<URLRequestContext> URLRequestContextBuilder::Build() {
     job_factory->SetProtocolHandler("data",
                                     base::WrapUnique(new DataProtocolHandler));
 
-#if !defined(DISABLE_FILE_SUPPORT)
+#if !BUILDFLAG(DISABLE_FILE_SUPPORT)
   if (file_enabled_) {
     job_factory->SetProtocolHandler(
         "file",
         base::MakeUnique<FileProtocolHandler>(context->GetFileTaskRunner()));
   }
-#endif  // !defined(DISABLE_FILE_SUPPORT)
+#endif  // !BUILDFLAG(DISABLE_FILE_SUPPORT)
 
-#if !defined(DISABLE_FTP_SUPPORT)
+#if !BUILDFLAG(DISABLE_FTP_SUPPORT)
   if (ftp_enabled_) {
-    ftp_transaction_factory_.reset(
-        new FtpNetworkLayer(context->host_resolver()));
-    job_factory->SetProtocolHandler("ftp", base::MakeUnique<FtpProtocolHandler>(
-                                               ftp_transaction_factory_.get()));
+    job_factory->SetProtocolHandler(
+        "ftp", FtpProtocolHandler::Create(context->host_resolver()));
   }
-#endif  // !defined(DISABLE_FTP_SUPPORT)
+#endif  // !BUILDFLAG(DISABLE_FTP_SUPPORT)
 
   std::unique_ptr<net::URLRequestJobFactory> top_job_factory(job_factory);
   if (!url_request_interceptors_.empty()) {

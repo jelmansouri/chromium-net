@@ -2,16 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef NET_QUIC_QUIC_BUFFERED_PACKET_STORE_H_
-#define NET_QUIC_QUIC_BUFFERED_PACKET_STORE_H_
+#ifndef NET_QUIC_CORE_QUIC_BUFFERED_PACKET_STORE_H_
+#define NET_QUIC_CORE_QUIC_BUFFERED_PACKET_STORE_H_
 
-#include "net/base/ip_address.h"
-#include "net/base/linked_hash_map.h"
+#include <list>
+
 #include "net/quic/core/quic_alarm.h"
 #include "net/quic/core/quic_alarm_factory.h"
-#include "net/quic/core/quic_clock.h"
-#include "net/quic/core/quic_protocol.h"
+#include "net/quic/core/quic_packets.h"
 #include "net/quic/core/quic_time.h"
+#include "net/quic/platform/api/quic_clock.h"
+#include "net/quic/platform/api/quic_containers.h"
+#include "net/quic/platform/api/quic_export.h"
+#include "net/quic/platform/api/quic_socket_address.h"
 
 namespace net {
 
@@ -28,7 +31,7 @@ class QuicBufferedPacketStorePeer;
 // of connections: connections with CHLO buffered and those without CHLO. The
 // latter has its own upper limit along with the max number of connections this
 // store can hold. The former pool can grow till this store is full.
-class NET_EXPORT_PRIVATE QuicBufferedPacketStore {
+class QUIC_EXPORT_PRIVATE QuicBufferedPacketStore {
  public:
   enum EnqueuePacketResult {
     SUCCESS = 0,
@@ -37,10 +40,10 @@ class NET_EXPORT_PRIVATE QuicBufferedPacketStore {
   };
 
   // A packets with client/server address.
-  struct NET_EXPORT_PRIVATE BufferedPacket {
+  struct QUIC_EXPORT_PRIVATE BufferedPacket {
     BufferedPacket(std::unique_ptr<QuicReceivedPacket> packet,
-                   IPEndPoint server_address,
-                   IPEndPoint client_address);
+                   QuicSocketAddress server_address,
+                   QuicSocketAddress client_address);
     BufferedPacket(BufferedPacket&& other);
 
     BufferedPacket& operator=(BufferedPacket&& other);
@@ -48,12 +51,12 @@ class NET_EXPORT_PRIVATE QuicBufferedPacketStore {
     ~BufferedPacket();
 
     std::unique_ptr<QuicReceivedPacket> packet;
-    IPEndPoint server_address;
-    IPEndPoint client_address;
+    QuicSocketAddress server_address;
+    QuicSocketAddress client_address;
   };
 
   // A queue of BufferedPackets for a connection.
-  struct NET_EXPORT_PRIVATE BufferedPacketList {
+  struct QUIC_EXPORT_PRIVATE BufferedPacketList {
     BufferedPacketList();
     BufferedPacketList(BufferedPacketList&& other);
 
@@ -65,10 +68,10 @@ class NET_EXPORT_PRIVATE QuicBufferedPacketStore {
     QuicTime creation_time;
   };
 
-  typedef linked_hash_map<QuicConnectionId, BufferedPacketList>
+  typedef QuicLinkedHashMap<QuicConnectionId, BufferedPacketList>
       BufferedPacketMap;
 
-  class NET_EXPORT_PRIVATE VisitorInterface {
+  class QUIC_EXPORT_PRIVATE VisitorInterface {
    public:
     virtual ~VisitorInterface() {}
 
@@ -90,8 +93,8 @@ class NET_EXPORT_PRIVATE QuicBufferedPacketStore {
   // Adds a copy of packet into packet queue for given connection.
   EnqueuePacketResult EnqueuePacket(QuicConnectionId connection_id,
                                     const QuicReceivedPacket& packet,
-                                    IPEndPoint server_address,
-                                    IPEndPoint client_address,
+                                    QuicSocketAddress server_address,
+                                    QuicSocketAddress client_address,
                                     bool is_chlo);
 
   // Returns true if there are any packets buffered for |connection_id|.
@@ -102,6 +105,9 @@ class NET_EXPORT_PRIVATE QuicBufferedPacketStore {
   // connection are present.
   std::list<BufferedPacket> DeliverPackets(QuicConnectionId connection_id);
 
+  // Discards packets buffered for |connection_id|, if any.
+  void DiscardPackets(QuicConnectionId connection_id);
+
   // Examines how long packets have been buffered in the store for each
   // connection. If they stay too long, removes them for new coming packets and
   // calls |visitor_|'s OnPotentialConnectionExpire().
@@ -111,9 +117,9 @@ class NET_EXPORT_PRIVATE QuicBufferedPacketStore {
   // Delivers buffered packets for next connection with CHLO to open.
   // Return connection id for next connection in |connection_id|
   // and all buffered packets including CHLO.
-  // The returned std::list should at least has one packet(CHLO) if
+  // The returned list should at least has one packet(CHLO) if
   // store does have any connection to open. If no connection in the store has
-  // received CHLO yet, empty std::list will be returned.
+  // received CHLO yet, empty list will be returned.
   std::list<BufferedPacket> DeliverPacketsForNextConnection(
       QuicConnectionId* connection_id);
 
@@ -137,7 +143,7 @@ class NET_EXPORT_PRIVATE QuicBufferedPacketStore {
   BufferedPacketMap undecryptable_packets_;
 
   // The max time the packets of a connection can be buffer in the store.
-  QuicTime::Delta connection_life_span_;
+  const QuicTime::Delta connection_life_span_;
 
   VisitorInterface* visitor_;  // Unowned.
 
@@ -149,9 +155,9 @@ class NET_EXPORT_PRIVATE QuicBufferedPacketStore {
 
   // Keeps track of connection with CHLO buffered up already and the order they
   // arrive.
-  linked_hash_map<QuicConnectionId, bool> connections_with_chlo_;
+  QuicLinkedHashMap<QuicConnectionId, bool> connections_with_chlo_;
 };
 
 }  // namespace net
 
-#endif  // NET_QUIC_QUIC_BUFFERED_PACKET_STORE_H_
+#endif  // NET_QUIC_CORE_QUIC_BUFFERED_PACKET_STORE_H_

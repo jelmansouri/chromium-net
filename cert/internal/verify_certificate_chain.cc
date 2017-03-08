@@ -69,7 +69,7 @@ class CertErrorScoperForCert : public CertErrorScoper {
   std::unique_ptr<CertErrorNode> BuildRootNode() override {
     return base::MakeUnique<CertErrorNode>(
         CertErrorNodeType::TYPE_CONTEXT, kContextCertificate,
-        CreateCertErrorParamsSizeT("index", index_));
+        CreateCertErrorParams1SizeT("index", index_));
   }
 
  private:
@@ -140,7 +140,7 @@ WARN_UNUSED_RESULT bool VerifyTimeValidity(const ParsedCertificate& cert,
 WARN_UNUSED_RESULT bool IsRsaWithSha1SignatureAlgorithm(
     const der::Input& signature_algorithm_tlv) {
   std::unique_ptr<SignatureAlgorithm> algorithm =
-      SignatureAlgorithm::CreateFromDer(signature_algorithm_tlv);
+      SignatureAlgorithm::Create(signature_algorithm_tlv, nullptr);
 
   return algorithm &&
          algorithm->algorithm() == SignatureAlgorithmId::RsaPkcs1 &&

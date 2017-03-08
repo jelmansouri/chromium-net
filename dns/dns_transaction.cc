@@ -38,9 +38,12 @@
 #include "net/dns/dns_session.h"
 #include "net/dns/dns_util.h"
 #include "net/log/net_log.h"
+#include "net/log/net_log_capture_mode.h"
 #include "net/log/net_log_event_type.h"
+#include "net/log/net_log_source.h"
+#include "net/log/net_log_with_source.h"
+#include "net/socket/datagram_client_socket.h"
 #include "net/socket/stream_socket.h"
-#include "net/udp/datagram_client_socket.h"
 
 namespace net {
 
@@ -97,7 +100,7 @@ class DnsAttempt {
   virtual const DnsResponse* GetResponse() const = 0;
 
   // Returns the net log bound to the source of the socket.
-  virtual const BoundNetLog& GetSocketNetLog() const = 0;
+  virtual const NetLogWithSource& GetSocketNetLog() const = 0;
 
   // Returns the index of the destination server within DnsConfig::nameservers.
   unsigned server_index() const { return server_index_; }
@@ -165,7 +168,7 @@ class DnsUDPAttempt : public DnsAttempt {
     return (resp != NULL && resp->IsValid()) ? resp : NULL;
   }
 
-  const BoundNetLog& GetSocketNetLog() const override {
+  const NetLogWithSource& GetSocketNetLog() const override {
     return socket_lease_->socket()->NetLog();
   }
 
@@ -334,7 +337,7 @@ class DnsTCPAttempt : public DnsAttempt {
     return (resp != NULL && resp->IsValid()) ? resp : NULL;
   }
 
-  const BoundNetLog& GetSocketNetLog() const override {
+  const NetLogWithSource& GetSocketNetLog() const override {
     return socket_->NetLog();
   }
 
@@ -563,7 +566,7 @@ class DnsTransactionImpl : public DnsTransaction,
                      const std::string& hostname,
                      uint16_t qtype,
                      const DnsTransactionFactory::CallbackType& callback,
-                     const BoundNetLog& net_log)
+                     const NetLogWithSource& net_log)
       : session_(session),
         hostname_(hostname),
         qtype_(qtype),
@@ -950,7 +953,7 @@ class DnsTransactionImpl : public DnsTransaction,
   // Cleared in DoCallback.
   DnsTransactionFactory::CallbackType callback_;
 
-  BoundNetLog net_log_;
+  NetLogWithSource net_log_;
 
   // Search list of fully-qualified DNS names to query next (in DNS format).
   std::deque<std::string> qnames_;
@@ -984,7 +987,7 @@ class DnsTransactionFactoryImpl : public DnsTransactionFactory {
       const std::string& hostname,
       uint16_t qtype,
       const CallbackType& callback,
-      const BoundNetLog& net_log) override {
+      const NetLogWithSource& net_log) override {
     return std::unique_ptr<DnsTransaction>(new DnsTransactionImpl(
         session_.get(), hostname, qtype, callback, net_log));
   }

@@ -20,9 +20,14 @@ class NET_EXPORT_PRIVATE HeaderCoalescer : public SpdyHeadersHandlerInterface {
   void OnHeader(base::StringPiece key, base::StringPiece value) override;
 
   void OnHeaderBlockEnd(size_t uncompressed_header_bytes) override {}
+  void OnHeaderBlockEnd(size_t uncompressed_header_bytes,
+                        size_t compressed_header_bytes) override {}
 
   SpdyHeaderBlock release_headers();
   bool error_seen() const { return error_seen_; }
+
+  // Returns the estimate of dynamically allocated memory in bytes.
+  size_t EstimateMemoryUsage() const;
 
  private:
   SpdyHeaderBlock headers_;

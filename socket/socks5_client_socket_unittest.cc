@@ -15,7 +15,6 @@
 #include "net/base/test_completion_callback.h"
 #include "net/base/winsock_init.h"
 #include "net/dns/mock_host_resolver.h"
-#include "net/log/net_log.h"
 #include "net/log/net_log_event_type.h"
 #include "net/log/test_net_log.h"
 #include "net/log/test_net_log_entry.h"
@@ -34,6 +33,8 @@ using net::test::IsOk;
 //-----------------------------------------------------------------------------
 
 namespace net {
+
+class NetLog;
 
 namespace {
 
@@ -82,9 +83,9 @@ void SOCKS5ClientSocketTest::SetUp() {
   HostResolver::RequestInfo info(HostPortPair("www.socks-proxy.com", 1080));
   TestCompletionCallback callback;
   std::unique_ptr<HostResolver::Request> request;
-  int rv =
-      host_resolver_->Resolve(info, DEFAULT_PRIORITY, &address_list_,
-                              callback.callback(), &request, BoundNetLog());
+  int rv = host_resolver_->Resolve(info, DEFAULT_PRIORITY, &address_list_,
+                                   callback.callback(), &request,
+                                   NetLogWithSource());
   ASSERT_THAT(rv, IsError(ERR_IO_PENDING));
   rv = callback.WaitForResult();
   ASSERT_THAT(rv, IsOk());

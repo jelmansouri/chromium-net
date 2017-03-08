@@ -20,6 +20,7 @@
 #include "net/http/http_util.h"
 #include "net/log/net_log.h"
 #include "net/log/net_log_event_type.h"
+#include "net/log/net_log_with_source.h"
 #include "net/url_request/url_request.h"
 
 namespace net {
@@ -77,13 +78,6 @@ bool URLRequestRedirectJob::CopyFragmentOnRedirect(const GURL& location) const {
   // The instantiators have full control over the desired redirection target,
   // including the reference fragment part of the URL.
   return false;
-}
-
-int URLRequestRedirectJob::GetResponseCode() const {
-  // Should only be called after the URLRequest has been notified there's header
-  // information.
-  DCHECK(fake_headers_.get());
-  return response_code_;
 }
 
 void URLRequestRedirectJob::StartAsync() {

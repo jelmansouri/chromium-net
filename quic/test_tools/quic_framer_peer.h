@@ -8,7 +8,7 @@
 #include "base/macros.h"
 #include "net/quic/core/crypto/quic_encrypter.h"
 #include "net/quic/core/quic_framer.h"
-#include "net/quic/core/quic_protocol.h"
+#include "net/quic/core/quic_packets.h"
 
 namespace net {
 
@@ -36,10 +36,6 @@ class QuicFramerPeer {
   static QuicEncrypter* GetEncrypter(QuicFramer* framer, EncryptionLevel level);
 
   static QuicPacketNumber GetLastPacketNumber(QuicFramer* framer);
-
-  static QuicPathId GetLastPathId(QuicFramer* framer);
-
-  static bool IsPathClosed(QuicFramer* framer, QuicPathId path_id);
 
  private:
   DISALLOW_COPY_AND_ASSIGN(QuicFramerPeer);

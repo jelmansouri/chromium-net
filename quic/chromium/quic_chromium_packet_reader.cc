@@ -9,7 +9,7 @@
 #include "base/single_thread_task_runner.h"
 #include "base/threading/thread_task_runner_handle.h"
 #include "net/base/net_errors.h"
-#include "net/quic/core/quic_clock.h"
+#include "net/quic/platform/api/quic_clock.h"
 
 namespace net {
 
@@ -19,7 +19,7 @@ QuicChromiumPacketReader::QuicChromiumPacketReader(
     Visitor* visitor,
     int yield_after_packets,
     QuicTime::Delta yield_after_duration,
-    const BoundNetLog& net_log)
+    const NetLogWithSource& net_log)
     : socket_(socket),
       visitor_(visitor),
       read_pending_(false),
@@ -64,6 +64,11 @@ void QuicChromiumPacketReader::StartReading() {
   } else {
     OnReadComplete(rv);
   }
+}
+
+size_t QuicChromiumPacketReader::EstimateMemoryUsage() const {
+  // Return the size of |read_buffer_|.
+  return kMaxPacketSize;
 }
 
 void QuicChromiumPacketReader::OnReadComplete(int result) {

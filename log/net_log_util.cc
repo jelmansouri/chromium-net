@@ -29,12 +29,16 @@
 #include "net/http/http_server_properties.h"
 #include "net/http/http_transaction_factory.h"
 #include "net/log/net_log.h"
+#include "net/log/net_log_capture_mode.h"
+#include "net/log/net_log_entry.h"
 #include "net/log/net_log_event_type.h"
+#include "net/log/net_log_parameters_callback.h"
+#include "net/log/net_log_with_source.h"
 #include "net/proxy/proxy_config.h"
 #include "net/proxy/proxy_retry_info.h"
 #include "net/proxy/proxy_service.h"
-#include "net/quic/core/quic_protocol.h"
-#include "net/quic/core/quic_utils.h"
+#include "net/quic/core/quic_error_codes.h"
+#include "net/quic/core/quic_packets.h"
 #include "net/socket/ssl_client_socket.h"
 #include "net/url_request/url_request.h"
 #include "net/url_request/url_request_context.h"
@@ -154,8 +158,8 @@ std::unique_ptr<base::DictionaryValue> GetNetConstants() {
   {
     std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
 
-    for (size_t i = 0; i < arraysize(kCertStatusFlags); i++)
-      dict->SetInteger(kCertStatusFlags[i].name, kCertStatusFlags[i].constant);
+    for (const auto& flag : kCertStatusFlags)
+      dict->SetInteger(flag.name, flag.constant);
 
     constants_dict->Set("certStatusFlag", std::move(dict));
   }
@@ -165,8 +169,8 @@ std::unique_ptr<base::DictionaryValue> GetNetConstants() {
   {
     std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
 
-    for (size_t i = 0; i < arraysize(kLoadFlags); i++)
-      dict->SetInteger(kLoadFlags[i].name, kLoadFlags[i].constant);
+    for (const auto& flag : kLoadFlags)
+      dict->SetInteger(flag.name, flag.constant);
 
     constants_dict->Set("loadFlag", std::move(dict));
   }
@@ -176,8 +180,8 @@ std::unique_ptr<base::DictionaryValue> GetNetConstants() {
   {
     std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
 
-    for (size_t i = 0; i < arraysize(kLoadStateTable); i++)
-      dict->SetInteger(kLoadStateTable[i].name, kLoadStateTable[i].constant);
+    for (const auto& state : kLoadStateTable)
+      dict->SetInteger(state.name, state.constant);
 
     constants_dict->Set("loadState", std::move(dict));
   }
@@ -196,8 +200,8 @@ std::unique_ptr<base::DictionaryValue> GetNetConstants() {
   {
     std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
 
-    for (size_t i = 0; i < arraysize(kNetErrors); i++)
-      dict->SetInteger(ErrorToShortString(kNetErrors[i]), kNetErrors[i]);
+    for (const auto& error : kNetErrors)
+      dict->SetInteger(ErrorToShortString(error), error);
 
     constants_dict->Set("netError", std::move(dict));
   }
@@ -209,8 +213,7 @@ std::unique_ptr<base::DictionaryValue> GetNetConstants() {
 
     for (QuicErrorCode error = QUIC_NO_ERROR; error < QUIC_LAST_ERROR;
          error = static_cast<QuicErrorCode>(error + 1)) {
-      dict->SetInteger(QuicUtils::ErrorToString(error),
-                       static_cast<int>(error));
+      dict->SetInteger(QuicErrorCodeToString(error), static_cast<int>(error));
     }
 
     constants_dict->Set("quicError", std::move(dict));
@@ -224,7 +227,7 @@ std::unique_ptr<base::DictionaryValue> GetNetConstants() {
     for (QuicRstStreamErrorCode error = QUIC_STREAM_NO_ERROR;
          error < QUIC_STREAM_LAST_ERROR;
          error = static_cast<QuicRstStreamErrorCode>(error + 1)) {
-      dict->SetInteger(QuicUtils::StreamErrorToString(error),
+      dict->SetInteger(QuicRstStreamErrorCodeToString(error),
                        static_cast<int>(error));
     }
 
@@ -236,8 +239,8 @@ std::unique_ptr<base::DictionaryValue> GetNetConstants() {
   {
     std::unique_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
 
-    for (size_t i = 0; i < arraysize(kSdchProblems); i++)
-      dict->SetInteger(kSdchProblems[i].name, kSdchProblems[i].constant);
+    for (const auto& problem : kSdchProblems)
+      dict->SetInteger(problem.name, problem.constant);
 
     constants_dict->Set("sdchProblemCode", std::move(dict));
   }
@@ -442,7 +445,7 @@ NET_EXPORT std::unique_ptr<base::DictionaryValue> GetNetInfo(
       for (NextProto proto : alpn_protos) {
         if (!next_protos_string.empty())
           next_protos_string.append(",");
-        next_protos_string.append(SSLClientSocket::NextProtoToString(proto));
+        next_protos_string.append(NextProtoToString(proto));
       }
       status_dict->SetString("alpn_protos", next_protos_string);
     }
@@ -519,15 +522,15 @@ NET_EXPORT void CreateNetLogEntriesForActiveObjects(
 
   // Create fake events.
   for (auto* request : requests) {
-    NetLog::ParametersCallback callback =
+    NetLogParametersCallback callback =
         base::Bind(&GetRequestStateAsValue, base::Unretained(request));
 
     // Note that passing the hardcoded NetLogCaptureMode::Default() below is
     // fine, since GetRequestStateAsValue() ignores the capture mode.
-    NetLog::EntryData entry_data(
+    NetLogEntryData entry_data(
         NetLogEventType::REQUEST_ALIVE, request->net_log().source(),
         NetLogEventPhase::BEGIN, request->creation_time(), &callback);
-    NetLog::Entry entry(&entry_data, NetLogCaptureMode::Default());
+    NetLogEntry entry(&entry_data, NetLogCaptureMode::Default());
     observer->OnAddEntry(entry);
   }
 }
